@@ -29,8 +29,9 @@
   body{display:flex;flex-direction:column;height:100vh;height:100dvh;
     padding:0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);box-sizing:border-box}
   header{flex:none}
-  .layout{display:grid;grid-template-columns:1fr 380px;gap:0;flex:1;min-height:0}
-  main{display:flex;flex-direction:column;min-width:0;border-right:1px solid var(--line)}
+  /* 행 높이를 화면에 고정(minmax(0,1fr)) → 오른쪽 매매 기록이 길어져도 차트 영역이 늘어나지 않음 */
+  .layout{display:grid;grid-template-columns:1fr 380px;grid-template-rows:minmax(0,1fr);gap:0;flex:1;min-height:0;overflow:hidden}
+  main{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;border-right:1px solid var(--line)}
   .toolbar{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
   .toolbar .sep{width:1px;height:22px;background:var(--line);margin:0 4px}
   label.small{color:var(--muted);font-size:12px}
@@ -49,11 +50,14 @@
   .tag.close{background:rgba(74,163,255,.2);color:var(--accent)} .tag.liq{background:rgba(245,197,66,.25);color:var(--mid)}
   #legend{padding:6px 12px;font-size:12px;color:var(--muted);min-height:26px;font-variant-numeric:tabular-nums}
   #legend b{color:var(--text);font-weight:600}
-  .charts{flex:1;display:flex;flex-direction:column;min-height:0;position:relative}
+  .charts{flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden}
+  /* contain:strict — 차트가 그린 캔버스 크기가 다시 칸 크기를 키우는 순환을 막음 (Safari에서 차트가 점점 커지던 원인) */
+  #mainChart,#rsiChart{contain:strict;overflow:hidden;position:relative}
   #mainChart{flex:3;min-height:0}
   .rsi-title{font-size:11px;color:var(--muted);padding:2px 12px;border-top:1px solid var(--line)}
   #rsiChart{flex:1;min-height:130px}
-  aside{overflow-y:auto;padding:12px;display:flex;flex-direction:column;gap:12px}
+  aside{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;min-height:0;padding:12px;display:flex;flex-direction:column;gap:12px}
+  aside > .card{flex:none}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
   .card h3{margin:0 0 8px;font-size:13px;color:var(--muted);font-weight:600}
   .kv{display:grid;grid-template-columns:1fr auto;gap:4px 8px;font-variant-numeric:tabular-nums}
@@ -93,7 +97,8 @@
   @media (max-width:900px){
     /* 세로 화면: 페이지 스크롤 방식, 차트 높이를 고정해서 RSI가 항상 다 보이게 */
     body{display:block;height:auto;padding-bottom:calc(118px + env(safe-area-inset-bottom))}
-    .layout{grid-template-columns:1fr;flex:none}
+    .layout{grid-template-columns:1fr;grid-template-rows:auto;flex:none;overflow:visible}
+    main{overflow:visible}
     main{border-right:0}
     .charts{flex:none}
     /* svh = 주소창이 펼쳐진 상태 기준의 고정 높이 → 스크롤 중 주소창이 접혀도 차트 크기가 변하지 않음 */
@@ -332,6 +337,30 @@ sRSI.createPriceLine({ price: 70, color: '#ef5350', lineStyle: 2, lineWidth: 1, 
 sRSI.createPriceLine({ price: 30, color: '#26a69a', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 sRSI.createPriceLine({ price: 50, color: '#3a4150', lineStyle: 3, lineWidth: 1, axisLabelVisible: false });
 rsiC.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+
+// 화면 회전·크기 변경 시 차트 크기를 칸에 맞춰 강제로 다시 맞춤
+// (아이패드 Safari는 가로→세로→가로 전환 때 자동 맞춤이 누락되어 세로 크기로 남는 경우가 있음)
+function fitCharts() {
+  [[main, 'mainChart'], [rsiC, 'rsiChart']].forEach(([ch, id]) => {
+    const el = $(id), w = el.clientWidth, h = el.clientHeight;
+    if (!w || !h) return;
+    const range = ch.timeScale().getVisibleLogicalRange();
+    ch.applyOptions({ autoSize: false });
+    ch.resize(w, h, true);
+    ch.applyOptions({ autoSize: true });
+    if (range) ch.timeScale().setVisibleLogicalRange(range);
+  });
+}
+let fitTimer = null;
+const scheduleFit = () => {
+  clearTimeout(fitTimer);
+  fitTimer = setTimeout(fitCharts, 150);
+  setTimeout(fitCharts, 600);   // 회전 애니메이션이 끝난 뒤 한 번 더
+};
+window.addEventListener('resize', scheduleFit);
+window.addEventListener('orientationchange', scheduleFit);
+if (window.visualViewport) visualViewport.addEventListener('resize', scheduleFit);
+if (screen.orientation) screen.orientation.addEventListener('change', scheduleFit);
 
 let syncing = false;
 main.timeScale().subscribeVisibleLogicalRangeChange(r => { if (syncing || !r) return; syncing = true; rsiC.timeScale().setVisibleLogicalRange(r); syncing = false; });
