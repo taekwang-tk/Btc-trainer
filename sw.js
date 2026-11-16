@@ -1,6 +1,6 @@
 // BTC 매매 연습 — 서비스 워커 (오프라인 실행용)
 // 프로그램을 고쳐서 다시 올릴 때 VERSION 숫자를 올리면 아이패드에 새 버전이 반영됩니다.
-const VERSION = 'v2';
+const VERSION = 'v3';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'data-v1';
 const SHELL_FILES = [
@@ -14,7 +14,10 @@ const SHELL_FILES = [
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(SHELL).then(c => c.addAll(SHELL_FILES)).then(() => self.skipWaiting()));
+  // cache:'reload' — 브라우저 캐시에 남은 옛 파일이 아니라 서버의 최신 파일을 저장
+  e.waitUntil(caches.open(SHELL)
+    .then(c => c.addAll(SHELL_FILES.map(u => new Request(u, { cache: 'reload' }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
