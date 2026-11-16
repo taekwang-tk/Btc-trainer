@@ -96,7 +96,8 @@
     .layout{grid-template-columns:1fr;flex:none}
     main{border-right:0}
     .charts{flex:none}
-    #mainChart{flex:none;height:48vh;height:48dvh;min-height:300px}
+    /* svh = 주소창이 펼쳐진 상태 기준의 고정 높이 → 스크롤 중 주소창이 접혀도 차트 크기가 변하지 않음 */
+    #mainChart{flex:none;height:48vh;height:48svh;min-height:300px}
     #rsiChart{flex:none;height:160px}
     #mbar{display:block;position:fixed;left:0;right:0;bottom:0;z-index:5;background:rgba(23,27,35,.97);
       border-top:1px solid var(--line);padding:8px 12px calc(8px + env(safe-area-inset-bottom));backdrop-filter:blur(6px)}
@@ -311,6 +312,10 @@ const base = {
   crosshair: { mode: LC.CrosshairMode.Normal },
   rightPriceScale: { borderColor: '#2a303c', minimumWidth: 80 },
   timeScale: { borderColor: '#2a303c', timeVisible: true, secondsVisible: false, rightOffset: 8 },
+  // 터치: 좌우로 끌면 차트 이동, 위아래로 끌면 페이지 스크롤 (차트가 세로 터치를 가로채지 않게)
+  handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
+  // 확대/축소: 두 손가락 핀치·마우스 휠·시간축 끌기만. 가격축은 항상 자동 맞춤
+  handleScale: { mouseWheel: true, pinch: true, axisPressedMouseMove: { time: true, price: false }, axisDoubleClickReset: true },
 };
 const main = LC.createChart($('mainChart'), { ...base, timeScale: { ...base.timeScale, visible: false } });
 const rsiC = LC.createChart($('rsiChart'), base);
