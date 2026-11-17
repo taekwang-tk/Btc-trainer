@@ -228,10 +228,10 @@ const KST = 9 * 3600;          // 차트 시간을 한국시간으로 표시
 // 봉 주기별 설정: sec=봉 길이, look=사후평가 봉 수, lookTxt=그 기간, jump=빨리감기 봉 수,
 // k=변동성 배율(이격도·사후평가 기준을 주기에 맞게 조정), pages=불러올 1000봉 묶음 수
 const TFS = {
-  '15m': { name: '15분',  sec: 900,   look: 16, lookTxt: '4시간', jump: 4,  jumpTxt: '1시간', k: 0.35, pages: 6 },
-  '30m': { name: '30분',  sec: 1800,  look: 16, lookTxt: '8시간', jump: 2,  jumpTxt: '1시간', k: 0.5,  pages: 6 },
-  '1h':  { name: '1시간', sec: 3600,  look: 24, lookTxt: '1일',   jump: 6,  jumpTxt: '6시간', k: 0.65, pages: 6 },
-  '4h':  { name: '4시간', sec: 14400, look: 12, lookTxt: '2일',   jump: 6,  jumpTxt: '1일',   k: 1,    pages: 5 },
+  '15m': { name: '15분',  sec: 900,   look: 16, lookTxt: '4시간', jump: 4,  jumpTxt: '1시간', k: 0.35, pages: 24 },
+  '30m': { name: '30분',  sec: 1800,  look: 16, lookTxt: '8시간', jump: 2,  jumpTxt: '1시간', k: 0.5,  pages: 20 },
+  '1h':  { name: '1시간', sec: 3600,  look: 24, lookTxt: '1일',   jump: 6,  jumpTxt: '6시간', k: 0.65, pages: 20 },
+  '4h':  { name: '4시간', sec: 14400, look: 12, lookTxt: '2일',   jump: 6,  jumpTxt: '1일',   k: 1,    pages: 20 },
   '1d':  { name: '1일',   sec: 86400, look: 7,  lookTxt: '7일',   jump: 7,  jumpTxt: '1주',   k: 1.8,  pages: 4 },
 };
 let tf = '4h', TF = TFS[tf], LOOKAHEAD = TF.look;
@@ -257,18 +257,24 @@ async function fetchBinance(interval, pages) {
   const hosts = ['https://data-api.binance.vision', 'https://api.binance.com', 'https://api1.binance.com'];
   for (const h of hosts) {
     try {
-      let all = [], endTime = null;
-      for (let p = 0; p < pages; p++) {
-        const url = `${h}/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=1000` + (endTime ? `&endTime=${endTime}` : '');
-        const r = await fetch(url);
-        if (!r.ok) throw new Error(r.status);
-        const rows = await r.json();
-        if (!rows.length) break;
-        all = rows.concat(all);
-        endTime = rows[0][0] - 1;
-        if (rows.length < 1000) break;
+      const base = `${h}/api/v3/klines?symbol=BTCUSDT&interval=${interval}&limit=1000`;
+      const get = async url => { const r = await fetch(url); if (!r.ok) throw new Error(r.status); return r.json(); };
+      // 1) 최신 1000봉을 받아 기준 시각을 잡고
+      const first = await get(base);
+      if (!first.length) throw new Error('empty');
+      const step = first.length > 1 ? first[1][0] - first[0][0] : 0;
+      // 2) 그 이전 구간들은 동시에 요청 (순서대로 받으면 페이지 수만큼 느려짐)
+      const jobs = [];
+      for (let p = 1; p < pages && step; p++) {
+        const end = first[0][0] - 1 - (p - 1) * 1000 * step;
+        jobs.push(get(`${base}&endTime=${end}`).catch(() => []));
+        $('status').textContent = `데이터 불러오는 중… (${pages}구간)`;
       }
+      const rest = await Promise.all(jobs);
+      const map = new Map();
+      [first, ...rest].flat().forEach(r => map.set(r[0], r));   // 겹치는 봉 제거
       const now = Date.now();
+      const all = [...map.values()].sort((a, b) => a[0] - b[0]);
       return { src: 'Binance', data: all.filter(r => r[6] < now).map(r => ({
         time: Math.floor(r[0] / 1000) + KST, open: +r[1], high: +r[2], low: +r[3], close: +r[4], volume: +r[5] })) };
     } catch (e) { console.warn('fetch fail', h, e); }
@@ -417,6 +423,18 @@ const onMove = p => { const i = p.time != null ? tIndex.get(p.time) : null; lege
 main.subscribeCrosshairMove(onMove); rsiC.subscribeCrosshairMove(onMove);
 
 // ───────────── 리플레이 ─────────────
+// 랜덤 시작: 최신 데이터까지 최소 데이터의 40%(그리고 최소 1500봉)가 남도록 앞쪽 구간에서 고름
+function randomStart() {
+  const minRemain = Math.min(C.length - HISTORY - 50, Math.max(1500, Math.floor(C.length * 0.4)));
+  const maxStart = C.length - 1 - minRemain;
+  return HISTORY + Math.floor(Math.random() * Math.max(1, maxStart - HISTORY));
+}
+// 남은 연습 구간 (봉 수와 기간)
+function remainText(from = cur) {
+  const n = C.length - 1 - from, days = n * TF.sec / 86400;
+  const span = days >= 60 ? `약 ${(days / 30).toFixed(0)}개월` : days >= 2 ? `약 ${days.toFixed(0)}일` : `약 ${(days * 24).toFixed(0)}시간`;
+  return `${n.toLocaleString()}봉 (${span})`;
+}
 function newGame(idx) {
   stopAuto();
   startIdx = cur = Math.max(HISTORY, Math.min(idx, C.length - 50));
@@ -425,11 +443,11 @@ function newGame(idx) {
   $('lev').disabled = false;
   $('startDate').value = fmtT(C[cur].time).slice(0, 10);
   renderAll();
-  toast(`${fmtT(C[cur].time)} 부터 연습 시작!`);
+  toast(`${fmtT(C[cur].time)} 부터 연습 시작! 남은 구간 ${remainText()}`);
 }
 function step(n = 1) {
   for (let k = 0; k < n; k++) {
-    if (cur >= C.length - 1) { stopAuto(); toast('데이터의 끝입니다. 결과 리포트를 확인하세요.'); break; }
+    if (cur >= C.length - 1) { stopAuto(); toast('최신 봉까지 모두 진행했습니다.'); report(); break; }
     cur++; pushBar(cur);
     if (checkLiq()) { stopAuto(); setMarkers(); toast('⚠ 강제 청산! 증거금을 모두 잃었습니다.'); break; }
   }
@@ -644,7 +662,7 @@ function updateUI() {
          + row('미실현 손익 (ROE)', `<span class="${cls(upnl)}">${fmtN(upnl)}</span> (${pc(upnl / p.margin * 100)})`);
     } else h += row('포지션', '<span class="muted">없음</span>');
   }
-  $('acctKv').innerHTML = h + row('단순 보유(B&H) 수익률', pc(bh));
+  $('acctKv').innerHTML = h + row('단순 보유(B&H) 수익률', pc(bh)) + row('남은 연습 구간', `<span class="muted">${remainText()}</span>`);
   // 하단 바 요약
   $('mRet').innerHTML = pc(ret);
   let info = `${fmtT(C[cur].time).slice(5)} · ${fmtN(price, 0)}`;
@@ -755,7 +773,7 @@ $('btnBuy').onclick = buy;
 $('btnSell').onclick = sell;
 $('btnReport').onclick = report;
 $('modal').onclick = e => { if (e.target.id === 'modal') $('modal').style.display = 'none'; };
-$('btnRandom').onclick = () => newGame(HISTORY + Math.floor(Math.random() * (C.length - HISTORY - 300)));
+$('btnRandom').onclick = () => newGame(randomStart());
 $('btnStart').onclick = () => {
   const v = $('startDate').value; if (!v) return newGame(HISTORY);
   const [y, m, d] = v.split('-').map(Number), ts = Date.UTC(y, m - 1, d) / 1000;
@@ -846,7 +864,7 @@ async function loadTF(newTf, keepTime) {
     idx = C.findIndex(c => c.time >= keepTime);
     if (idx < HISTORY || idx > C.length - 50) { idx = -1; toast(`${TF.name}봉 데이터 범위 밖이라 랜덤 시점에서 시작합니다.`); }
   }
-  newGame(idx >= 0 ? idx : HISTORY + Math.floor(Math.random() * (C.length - HISTORY - 300)));
+  newGame(idx >= 0 ? idx : randomStart());
 }
 loadTF('4h');
 })();
