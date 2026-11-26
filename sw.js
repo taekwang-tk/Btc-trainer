@@ -1,6 +1,6 @@
 // BTC 매매 연습 — 서비스 워커 (오프라인 실행용)
 // 프로그램을 고쳐서 다시 올릴 때 VERSION 숫자를 올리면 아이패드에 새 버전이 반영됩니다.
-const VERSION = 'v8';
+const VERSION = 'v9';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'data-v1';
 const SHELL_FILES = [

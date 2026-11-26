@@ -82,6 +82,14 @@
   .memo{font-size:12px;margin-top:4px;color:#d6dae3}
   #riskInfo{color:var(--text)}
   button.drawing{background:var(--mid);border-color:var(--mid);color:#000}
+  #mainChart{z-index:1}
+  #htfBox{position:absolute;top:6px;left:8px;width:250px;height:150px;z-index:10;pointer-events:none;display:none;
+    background:rgba(15,18,24,.9);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #htfBox .cap{position:absolute;top:3px;left:8px;font-size:11px;color:var(--muted);z-index:4}
+  #htfChart{position:absolute;inset:0}
+  .rv tr.click{cursor:pointer} .rv tr.click:hover td{background:var(--panel2)}
+  .trade .top .jump{cursor:pointer;text-decoration:underline dotted}
+  @media (max-width:600px){ #htfBox{width:180px;height:110px} }
   .sig{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--line)}
   .sig:last-child{border-bottom:0}
   .trade{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--panel2)}
@@ -167,7 +175,7 @@
         <option value="1d">1일</option>
       </select>
       <span class="sep"></span>
-      <label class="small">시작일</label>
+      <label class="small">시작</label>
       <input type="date" id="startDate">
       <button id="btnRandom">🎲 랜덤</button>
       <button id="btnStart" class="primary">새 연습 시작</button>
@@ -189,16 +197,23 @@
         <option value="macd">MACD</option>
       </select>
       <span class="sep"></span>
-      <button id="btnHLine" title="차트를 한 번 탭해서 수평선(지지·저항) 긋기">─ 수평선</button>
-      <button id="btnTLine" title="차트의 두 점을 탭해서 추세선 긋기">╱ 추세선</button>
-      <button id="btnUndoLine" title="마지막으로 그은 선 지우기">🧹 선 지우기</button>
+      <button id="btnHTF" title="상위 봉 흐름을 작은 차트로 보기">🔭 상위봉</button>
       <span class="sep"></span>
-      <button id="btnReport">📊 결과 리포트</button>
+      <button id="btnHLine" title="차트를 한 번 탭해서 수평선(지지·저항) 긋기">─ 수평</button>
+      <button id="btnTLine" title="차트의 두 점을 탭해서 추세선 긋기">╱ 추세</button>
+      <button id="btnFib" title="파동의 시작·끝 두 점을 탭해서 피보나치 되돌림 긋기">𝑓 피보</button>
+      <button id="btnAlert" title="차트를 탭한 가격에 닿으면 자동재생을 멈추고 알림">🔔 알림</button>
+      <button id="btnUndoLine" title="마지막으로 그은 선 지우기">🧹 지우기</button>
+      <span class="sep"></span>
+      <button id="btnReport">📊 리포트</button>
+      <button id="btnReview">🔍 복기</button>
       <button id="btnHistory">📈 내 기록</button>
     </div>
     <div id="legend"></div>
     <div class="charts">
+
       <div id="mainChart"></div>
+      <div id="htfBox"><div class="cap" id="htfCap"></div><div id="htfChart"></div></div>
       <div class="rsi-title" id="lowerTitle"></div>
       <div id="rsiChart"></div>
     </div>
@@ -226,7 +241,7 @@
         레버리지 <select id="lev">
           <option>1</option><option>2</option><option selected>3</option><option>5</option><option>10</option>
           <option>20</option><option>50</option><option>100</option>
-        </select>배 <span class="muted">· 격리 마진 · 유지증거금률 0.5%</span>
+        </select>배 <span class="muted">· 격리 마진 · 유지증거금률 0.5% · 펀딩비 8시간마다 0.01% (롱이 숏에게 지급)</span>
       </div>
       <div class="orow">
         손절 <input id="slPct" type="number" step="0.5" min="0" placeholder="없음" inputmode="decimal">%
@@ -323,7 +338,9 @@ let showBB = false, lower = 'rsi';
 let riskPct = 0;               // 리스크 기준 수량: 손절 시 잃을 자산 비율(%) — 0이면 끔
 const TAGS = ['추세추종', '눌림목', '돌파', '지지선', '저항선', '과매도', '과매수', '다이버전스', '이평선', '감'];
 let selTags = new Set(), pendingNote = null;
-let drawMode = null, drawAnchor = null, userLines = [];
+let drawMode = null, drawAnchor = null, userLines = [], alerts = [];
+let showHTF = true, reviewMarks = [], nextPF = null, jumped = false;
+const FUND_RATE = 0.0001, FUND_SEC = 8 * 3600;   // 펀딩비: 8시간마다(UTC 0·8·16시) 0.01%, 롱이 지급
 
 const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -516,13 +533,53 @@ function renderAll() {
   sRSI.setData(idx.map(i => barL(RSI, i)));
   sMacd.setData(idx.map(i => barL(MACD, i))); sSig.setData(idx.map(i => barL(MSIG, i))); sHist.setData(idx.map(barH));
   main.timeScale().setVisibleLogicalRange({ from: cur - 130, to: cur + 8 });
-  applyView(); setMarkers(); updateUI(); legend(cur);
+  applyView(); setMarkers(); updateUI(); legend(cur); htfFull();
 }
 function pushBar(i) {
   sCandle.update(barC(i)); sVol.update(barV(i));
   sMA20.update(barL(MA20, i)); sMA60.update(barL(MA60, i)); sMA120.update(barL(MA120, i));
   sBBU.update(barL(BBU, i)); sBBL.update(barL(BBL, i)); sRSI.update(barL(RSI, i));
   sMacd.update(barL(MACD, i)); sSig.update(barL(MSIG, i)); sHist.update(barH(i));
+  htfPush(i); trendPush(i);
+}
+
+// ───────────── 상위 봉 미니 차트 (현재 봉까지의 데이터만 묶어서 만듦 → 미래 정보 없음) ─────────────
+const HTF = { '15m': [14400, '4시간'], '30m': [14400, '4시간'], '1h': [86400, '1일'], '4h': [86400, '1일'], '1d': [604800, '1주'] };
+const htfC = LC.createChart($('htfChart'), {
+  autoSize: true,
+  layout: { background: { type: 'solid', color: 'transparent' }, textColor: '#8a93a5', fontSize: 10 },
+  grid: { vertLines: { visible: false }, horzLines: { visible: false } },
+  rightPriceScale: { visible: false }, leftPriceScale: { visible: false },
+  timeScale: { visible: false, rightOffset: 2 },
+  crosshair: { vertLine: { visible: false }, horzLine: { visible: false } },
+  handleScroll: false, handleScale: false,
+});
+const sHC = htfC.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350', lastValueVisible: false, priceLineVisible: false });
+const sHMA = htfC.addLineSeries({ color: '#f5c542', lineWidth: 1, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false });
+let hb = [];
+// 바이낸스와 같은 기준(UTC)으로 묶음. 주봉은 월요일 시작
+const hKeyOf = t => { const s = HTF[tf][0], u = t - KST; return s === 604800 ? Math.floor((u - 4 * 86400) / s) : Math.floor(u / s); };
+function htfAdd(i) {
+  const c = C[i], k = hKeyOf(c.time), b = hb[hb.length - 1];
+  if (b && b.k === k) { b.high = Math.max(b.high, c.high); b.low = Math.min(b.low, c.low); b.close = c.close; }
+  else hb.push({ k, time: c.time, open: c.open, high: c.high, low: c.low, close: c.close });
+}
+const hBar = b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+const hMA = j => { if (j < 19) return { time: hb[j].time }; let s = 0; for (let k = j - 19; k <= j; k++) s += hb[k].close; return { time: hb[j].time, value: s / 20 }; };
+function htfFull() {
+  $('htfBox').style.display = showHTF ? 'block' : 'none';
+  $('btnHTF').classList.toggle('on', showHTF);
+  if (!showHTF || !C[cur]) return;
+  hb = []; for (let i = 0; i <= cur; i++) htfAdd(i);
+  sHC.setData(hb.map(hBar)); sHMA.setData(hb.map((_, j) => hMA(j)));
+  htfC.timeScale().setVisibleLogicalRange({ from: hb.length - 45, to: hb.length + 1 });
+  $('htfCap').textContent = `${HTF[tf][1]}봉 · MA20`;
+}
+function htfPush(i) {
+  if (!showHTF || !hb.length) return;
+  htfAdd(i);
+  const j = hb.length - 1;
+  sHC.update(hBar(hb[j])); sHMA.update(hMA(j));
 }
 // 보조지표 표시 상태 (볼린저밴드 켜기/끄기, 아래 칸 RSI ↔ MACD)
 function applyView() {
@@ -556,11 +613,12 @@ const MK = {
 };
 const AUTO_MK = { sl: '손절', tp: '익절', limit: '지정' };
 function setMarkers() {
-  sCandle.setMarkers(trades.map(t => {
+  const ms = trades.map(t => {
     const m = { time: C[t.i].time, ...MK[t.type] };
     if (t.auto) m.text = `${m.text}·${AUTO_MK[t.auto]}`;
     return m;
-  }));
+  }).concat(reviewMarks);
+  sCandle.setMarkers(ms.sort((a, b) => a.time - b.time));
 }
 // 차트 위 진입가/평단/청산가/손절·익절/지정가 가로선
 let posLines = [];
@@ -617,12 +675,13 @@ function newGame(idx) {
   finalizeGame();
   stopAuto();
   startIdx = cur = Math.max(HISTORY, Math.min(idx, RAW.length - 50));
-  if (blind) { PF = (1000 + Math.random() * 9000) / RAW[cur].close; buildC(); }
+  if (blind) { PF = nextPF || (1000 + Math.random() * 9000) / RAW[cur].close; buildC(); }
   else if (C !== RAW) { PF = 1; buildC(); }
+  nextPF = null;
   applyPrecision();
-  acct = { cash: INITIAL, btc: 0, cost: 0, pos: null, stops: null, ptags: [] };
-  trades = []; orders = []; gameId = Date.now(); gameRecorded = false;
-  clearLines();
+  acct = { cash: INITIAL, btc: 0, cost: 0, pos: null, stops: null, ptags: [], funding: 0, openT: null };
+  trades = []; orders = []; gameId = Date.now(); gameRecorded = false; reviewMarks = [];
+  clearLines(); clearAlerts();
   $('lev').disabled = false;
   $('startDate').value = fmtReal(C[cur].time).slice(0, 10);
   setTitle(); setStatus();
@@ -631,15 +690,29 @@ function newGame(idx) {
   saveNow();
 }
 function step(n = 1) {
+  if (reviewMarks.length) { reviewMarks = []; setMarkers(); }
+  // 복기로 지난 시점을 보고 있었다면 현재 봉으로 화면을 되돌림
+  if (jumped) { jumped = false; main.timeScale().setVisibleLogicalRange({ from: cur - 130, to: cur + 8 }); }
   for (let k = 0; k < n; k++) {
     if (cur >= C.length - 1) { stopAuto(); finalizeGame(); toast('최신 봉까지 모두 진행했습니다.'); report(); break; }
     cur++; pushBar(cur);
+    applyFunding();
+    const alerted = checkAlerts();
     // 같은 봉 안에서는 손절·익절 → 강제 청산 → 지정가 순서로 확인
     if (checkStops()) { stopAuto(); break; }
     if (checkLiq()) { stopAuto(); setMarkers(); toast('⚠ 강제 청산! 증거금을 모두 잃었습니다.'); break; }
     if (checkOrders()) { stopAuto(); break; }
+    if (alerted) { stopAuto(); break; }
   }
   updateUI(); legend(cur);
+}
+// 선물 펀딩비: 이번 봉 사이에 펀딩 시각(UTC 0·8·16시)이 지나가면 포지션 가치 × 0.01%를 증거금에서 정산 (롱 지급, 숏 수령)
+function applyFunding() {
+  const p = acct.pos; if (mode !== 'fut' || !p || cur < 1) return;
+  const n = Math.floor((C[cur].time - KST) / FUND_SEC) - Math.floor((C[cur - 1].time - KST) / FUND_SEC);
+  if (n <= 0) return;
+  const fee = n * FUND_RATE * p.qty * C[cur].open * p.side;
+  p.margin -= fee; acct.funding = (acct.funding || 0) + fee;
 }
 function stopAuto() { clearInterval(timer); timer = null; $('btnAuto').classList.remove('on'); $('mAuto').classList.remove('on'); }
 function toggleAuto() {
@@ -669,7 +742,7 @@ function sell(price = C[cur].close, r = ratio, auto = null) {
   const pnl = proceeds - costPart;
   acct.cash += proceeds; acct.btc -= qty; acct.cost -= costPart;
   if (acct.btc < 1e-10) { acct.btc = 0; acct.cost = 0; acct.stops = null; }
-  record('sell', price, qty, proceeds, { pnl, pct: pnl / costPart * 100 }, null, auto);
+  record('sell', price, qty, proceeds, { pnl, pct: pnl / costPart * 100, entry: costPart / qty }, null, auto);
   return true;
 }
 // ── 선물: 격리 마진, 단방향 포지션 ──
@@ -701,7 +774,7 @@ function closePos(r = 1, price = C[cur].close, auto = null) {
   const type = p.side > 0 ? 'closeLong' : 'closeShort', lev = p.lev;
   p.qty -= q; p.margin -= mPart;
   if (p.qty < 1e-10) { acct.pos = null; acct.stops = null; }
-  record(type, price, q, mPart + net, { pnl: net, pct: net / mPart * 100, move: p.side * (price / p.entry - 1) * 100 }, lev, auto);
+  record(type, price, q, mPart + net, { pnl: net, pct: net / mPart * 100, move: p.side * (price / p.entry - 1) * 100, entry: p.entry }, lev, auto);
   return true;
 }
 function checkLiq() {
@@ -709,9 +782,9 @@ function checkLiq() {
   const lp = liqPrice(p), c = C[cur];
   if (!((p.side > 0 && c.low <= lp) || (p.side < 0 && c.high >= lp))) return false;
   acct.pos = null; acct.stops = null;
-  const t = { type: 'liq', i: cur, price: lp, qty: p.qty, amount: 0, lev: p.lev, side: p.side, ptags: (acct.ptags || []).slice(),
-    result: { pnl: -p.margin, pct: -100, move: p.side * (lp / p.entry - 1) * 100 } };
-  acct.ptags = [];
+  const t = { type: 'liq', i: cur, price: lp, qty: p.qty, amount: 0, lev: p.lev, side: p.side, ptags: (acct.ptags || []).slice(), openT: acct.openT,
+    result: { pnl: -p.margin, pct: -100, move: p.side * (lp / p.entry - 1) * 100, entry: p.entry } };
+  acct.ptags = []; acct.openT = null;
   t.eval = { score: -3, label: '강제 청산', g: 'g-bad', pts: [
     { s: -3, txt: `${p.side > 0 ? '롱' : '숏'} ${p.lev}배 포지션이 청산가 ${fmtPx(lp)}에 닿아 강제 청산됐습니다. 증거금 ${fmtN(p.margin)} USDT 전액 손실.` },
     { s: 0, txt: `진입가 대비 ${fmtP(t.result.move)} 움직임만으로 청산됐습니다. 레버리지를 낮추거나, 청산가 전에 손절하는 규칙을 정하세요.` }] };
@@ -822,10 +895,12 @@ function record(type, price, qty, amount, result, lev = null, auto = null) {
     const n = pendingNote || { tags: [], memo: '' };
     t.tags = n.tags || []; if (n.memo) t.memo = n.memo; if (n.risk) t.risk = n.risk;
     acct.ptags = [...new Set([...(acct.ptags || []), ...t.tags])];
+    if (acct.openT == null) acct.openT = C[cur].time;   // 이 포지션을 처음 연 봉 시각 (복기용)
   } else {
     // 청산 결과는 이 포지션을 만든 진입들의 근거 태그에 연결 (근거별 승률 계산용)
     t.ptags = (acct.ptags || []).slice();
-    if (!posBase()) acct.ptags = [];
+    t.openT = acct.openT;
+    if (!posBase()) { acct.ptags = []; acct.openT = null; }
   }
   t.eval = evaluate(t);
   trades.push(t);
@@ -985,6 +1060,7 @@ function updateUI() {
          + row('포지션 증거금', fmtN(p.margin) + ' USDT')
          + row('미실현 손익 (ROE)', `<span class="${cls(upnl)}">${fmtN(upnl)}</span> (${pc(upnl / p.margin * 100)})`);
     } else h += row('포지션', '<span class="muted">없음</span>');
+    if (acct.funding) h += row('누적 펀딩비', `<span class="${cls(-acct.funding)}">${acct.funding > 0 ? '-' : '+'}${fmtN(Math.abs(acct.funding))} USDT</span> <span class="muted">(${acct.funding > 0 ? '지급' : '수령'})</span>`);
   }
   $('acctKv').innerHTML = h + row('단순 보유(B&H) 수익률', pc(bh)) + row('남은 연습 구간', `<span class="muted">${remainText()}</span>`);
   // 하단 바 요약
@@ -1057,10 +1133,13 @@ function renderPending() {
   const s = acct.stops;
   if (s && posBase()) h += `<div class="po"><span>${s.sl ? `🛑 손절 <b>${fmtPx(s.sl)}</b> (-${s.slPct}%)` : ''} ${s.tp ? `🎯 익절 <b>${fmtPx(s.tp)}</b> (+${s.tpPct}%)` : ''}</span><button data-x="stops">해제</button></div>`;
   orders.forEach(o => h += `<div class="po"><span>⏳ 지정가 ${KIND[o.kind]} <b>${fmtPx(o.px)}</b> · ${Math.round(o.r * 100)}%${o.kind === 'long' || o.kind === 'short' ? ` · ${o.lev}x` : ''}</span><button data-x="${o.id}">취소</button></div>`);
+  alerts.forEach(a => h += `<div class="po"><span>🔔 가격 알림 <b>${fmtPx(a.px)}</b> <span class="muted">(${a.px >= C[cur].close ? '위' : '아래'} ${fmtP((a.px / C[cur].close - 1) * 100)})</span></span><button data-a="${a.id}">취소</button></div>`);
   $('pending').innerHTML = h;
 }
 $('pending').onclick = e => {
-  const x = e.target.dataset && e.target.dataset.x; if (!x) return;
+  const ds = e.target.dataset || {};
+  if (ds.a) { const a = alerts.find(x => String(x.id) === ds.a); if (a) removeAlert(a); toast('가격 알림을 취소했습니다.'); return updateUI(); }
+  const x = ds.x; if (!x) return;
   if (x === 'stops') { acct.stops = null; toast('손절·익절 예약을 해제했습니다.'); }
   else { orders = orders.filter(o => String(o.id) !== x); toast('지정가 주문을 취소했습니다.'); }
   updateUI();
@@ -1072,12 +1151,12 @@ function equity() {
 const AUTO_TXT = { sl: '손절 주문', tp: '익절 주문', limit: '지정가' };
 function renderTrades() {
   if (!trades.length) { $('trades').innerHTML = '<span class="muted">아직 매매가 없습니다. 차트를 보고 매수/매도해 보세요.</span>'; return; }
-  $('trades').innerHTML = trades.slice().reverse().map(t => {
-    const e = t.eval, h = hindsight(t);
+  $('trades').innerHTML = trades.slice().reverse().map((t, k) => {
+    const e = t.eval, h = hindsight(t), idx = trades.length - 1 - k;
     const res = t.result ? ` · 실현손익 <b class="${cls(t.result.pct)}">${fmtP(t.result.pct)}</b>${t.lev ? ' ROE' : ''} (${fmtN(t.result.pnl)} USDT)` : '';
     const tagCls = { buy: 'buy', long: 'long', sell: 'sell', short: 'short', closeLong: 'close', closeShort: 'close', liq: 'liq' }[t.type];
     return `<div class="trade">
-      <div class="top"><span><span class="tag ${tagCls}">${ACT[t.type]}${t.lev ? ` ${t.lev}x` : ''}</span>${t.auto ? `<span class="auto">${AUTO_TXT[t.auto]}</span>` : ''} ${fmtT(C[t.i].time)}</span>
+      <div class="top"><span><span class="tag ${tagCls}">${ACT[t.type]}${t.lev ? ` ${t.lev}x` : ''}</span>${t.auto ? `<span class="auto">${AUTO_TXT[t.auto]}</span>` : ''} <span class="jump" data-j="${idx}" title="차트에서 이 시점 보기">${fmtT(C[t.i].time)}</span></span>
       <span class="grade ${e.g}">${e.label} (${e.score >= 0 ? '+' : ''}${e.score})</span></div>
       <div class="muted" style="font-size:12px">체결가 ${fmtPx(t.price)} · ${fmtQ(t.qty)} ${coin}${res}${t.risk ? ` · 리스크 ${t.risk.pct}%` : ''}</div>
       ${t.tags && t.tags.length ? `<div class="ttags">${t.tags.map(g => `<span class="ttag">#${g}</span>`).join('')}</div>` : ''}
@@ -1112,7 +1191,7 @@ function finalizeGame() {
   H.push({ id: gameId, at: Date.now(), coin, tf, mode, blind, from: C[startIdx].time, to: C[cur].time, bars: cur - startIdx,
     ret: +s.ret.toFixed(2), bh: +s.bh.toFixed(2), n: trades.length, entries: s.buys.length, exits: s.sells.length,
     win: s.win == null ? null : +s.win.toFixed(1), score: +s.avgScore.toFixed(2), good: s.good, bad: s.bad, liq: s.liqs, sl: s.withSL,
-    tags: tagStats(trades) });
+    tags: tagStats(trades), pf: blind ? PF : null, fund: acct.funding ? +acct.funding.toFixed(2) : 0 });
   while (H.length > 300) H.shift();
   store.set(K_HIST, H);
   gameRecorded = true;
@@ -1168,16 +1247,113 @@ function report() {
       <span>지표 기준 좋은 타점 / 위험 타점</span><span>${good} / ${bad} (전체 ${trades.length})</span>
       <span>사후 평가 좋은 결과</span><span>${hs.length ? `${hGood} / ${hs.length}` : '-'}</span>
       <span>손절가를 정한 진입</span><span>${buys.length ? `${s.withSL} / ${buys.length}` : '-'}</span>
+      ${mode === 'fut' && acct.funding ? `<span>누적 펀딩비</span><span class="${cls(-acct.funding)}">${acct.funding > 0 ? '-' : '+'}${fmtN(Math.abs(acct.funding))} USDT (${acct.funding > 0 ? '지급' : '수령'})</span>` : ''}
     </div>
     ${reveal}
+    ${attemptsHtml()}
     <h3>💡 매매 습관 코멘트</h3><ul>${tips.map(t => `<li>${t}</li>`).join('')}</ul>
     ${tagTable(tagStats(trades), '🏷 진입 근거별 성적 (이번 연습)')}
-    <div class="mbtns2"><button id="mNew">🎲 새 연습 (랜덤)</button><span><button id="mHist">📈 내 기록</button> <button class="primary" id="closeModal">닫기</button></span></div>`;
+    <div class="mbtns2"><span><button id="mNew">🎲 새 연습 (랜덤)</button> <button id="mRetry" title="같은 코인·봉·시작 시점에서 처음부터 다시">🔁 같은 구간 다시</button></span>
+      <span><button id="mReview">🔍 복기</button> <button id="mHist">📈 내 기록</button> <button class="primary" id="closeModal">닫기</button></span></div>`;
   $('modal').style.display = 'flex';
   $('closeModal').onclick = closeModal;
   $('mHist').onclick = showHistory;
+  $('mReview').onclick = showReview;
   $('mNew').onclick = () => { closeModal(); newGame(randomStart()); };
+  $('mRetry').onclick = () => retryGame({ coin, tf, mode, blind, from: C[startIdx].time, pf: blind ? PF : null });
 }
+// 같은 구간(코인·봉·현물/선물·시작 시점)의 지난 도전 기록
+function attemptsHtml() {
+  const from = C[startIdx].time;
+  const A = (store.get(K_HIST) || []).filter(h => h.coin === coin && h.tf === tf && h.mode === mode && h.from === from && h.id !== gameId);
+  if (!A.length) return '';
+  const pc = v => `<span class="${cls(v)}">${fmtP(v)}</span>`;
+  return `<h3>🔁 같은 구간 지난 도전 (${A.length}번)</h3><div style="overflow-x:auto"><table class="htable"><thead><tr><th>도전</th><th>날짜</th><th>진행</th><th>수익률</th><th>단순보유</th><th>점수</th></tr></thead><tbody>${
+    A.map((h, i) => { const d = new Date(h.at); return `<tr><td>${i + 1}번째</td><td>${d.getMonth() + 1}/${d.getDate()}</td><td>${h.bars}봉</td><td>${pc(h.ret)}</td><td>${pc(h.bh)}</td><td>${h.score >= 0 ? '+' : ''}${h.score.toFixed(1)}</td></tr>`; }).join('')
+  }<tr><td><b>이번</b></td><td>-</td><td>${cur - startIdx}봉</td><td>${pc(gameStats().ret)}</td><td>${pc((C[cur].close / C[startIdx].close - 1) * 100)}</td><td>${(() => { const v = gameStats().avgScore; return (v >= 0 ? '+' : '') + v.toFixed(1); })()}</td></tr></tbody></table></div>
+  <p class="muted" style="font-size:12px">진행한 봉 수가 다르면 단순 보유 수익률도 달라집니다. 같은 지점까지 비교하려면 진행 봉 수를 맞춰 보세요.</p>`;
+}
+// 같은 구간 다시 도전: 이번 판을 기록에 저장하고, 같은 코인·봉·모드·시작 시점으로 새로 시작
+async function retryGame(g) {
+  finalizeGame(); closeModal(); stopAuto();
+  coin = g.coin; blind = !!g.blind; nextPF = g.blind && g.pf ? g.pf : null;
+  if (g.mode !== mode) setMode(g.mode);
+  await loadTF(g.tf, g.from);
+  setTimeout(() => toast(`🔁 같은 구간 다시 도전 — ${fmtT(C[startIdx].time)}부터. 이번엔 더 잘해 봐요!`), 50);
+}
+
+// ───────────── 복기 ─────────────
+// 포지션을 들고 있는 동안 가장 유리했던 가격(최대 수익)과 가장 불리했던 가격(최대 손실) — 가격 변동률 기준
+function excursion(t) {
+  if (isEntryType(t.type) || !t.result || t.result.entry == null || t.openT == null) return null;
+  const o = tIndex.get(t.openT); if (o == null || o >= t.i) return null;
+  const dir = t.type === 'closeShort' || (t.type === 'liq' && t.side < 0) ? -1 : 1, e = t.result.entry;
+  let best = -Infinity, worst = Infinity, bi = o, wi = o;
+  for (let k = o + 1; k <= t.i; k++) {
+    const f = dir * ((dir > 0 ? C[k].high : C[k].low) / e - 1) * 100, a = dir * ((dir > 0 ? C[k].low : C[k].high) / e - 1) * 100;
+    if (f > best) { best = f; bi = k; }
+    if (a < worst) { worst = a; wi = k; }
+  }
+  return { mfe: best, mae: worst, bi, wi, dir, o, real: dir * (t.price / e - 1) * 100 };
+}
+function showReview() {
+  stopAuto();
+  if (!trades.length) {
+    $('modalBox').innerHTML = `<h2>🔍 복기</h2><p class="muted">아직 매매가 없습니다.</p><div class="mbtns2"><span></span><button class="primary" id="closeModal">닫기</button></div>`;
+    $('modal').style.display = 'flex'; $('closeModal').onclick = closeModal; return;
+  }
+  const exs = [];
+  const rows = trades.map((t, idx) => {
+    const tagCls = { buy: 'buy', long: 'long', sell: 'sell', short: 'short', closeLong: 'close', closeShort: 'close', liq: 'liq' }[t.type];
+    let detail = '';
+    if (isEntryType(t.type)) {
+      const h = hindsight(t);
+      detail = h.pending ? '<span class="muted">사후 평가 대기</span>' : `<span class="${h.s > 0 ? 'g-good' : h.s < 0 ? 'g-bad' : 'g-mid'}">${h.s > 0 ? '👍 좋은 자리' : h.s < 0 ? '👎 아쉬운 자리' : '평범'}</span>`;
+    } else {
+      const x = excursion(t);
+      if (x) {
+        exs.push(x);
+        const miss = x.mfe - x.real;
+        detail = `보유 중 최고 <span class="pos">${fmtP(x.mfe)}</span> · 최저 <span class="neg">${fmtP(x.mae)}</span> → 실제 <b class="${cls(x.real)}">${fmtP(x.real)}</b>${x.mfe >= 2 * TF.k && miss > 2 * TF.k ? ` <span style="color:var(--mid)">(놓친 폭 ${miss.toFixed(1)}%p)</span>` : ''}`;
+      } else detail = t.result ? `실제 <b class="${cls(t.result.pct)}">${fmtP(t.result.pct)}</b>` : '';
+    }
+    return `<tr class="click" data-j="${idx}"><td>${fmtT(C[t.i].time)}</td><td><span class="tag ${tagCls}">${ACT[t.type]}</span></td><td>${fmtPx(t.price)}</td><td class="${t.eval.g}">${t.eval.score >= 0 ? '+' : ''}${t.eval.score}</td><td style="text-align:left;white-space:normal">${detail}</td></tr>`;
+  }).join('');
+  // 요약: 수익 구간을 얼마나 챙겼는지, 수익 중이던 포지션을 손실로 마감한 횟수
+  const tips = [];
+  const pos = exs.filter(x => x.mfe > 0);
+  if (pos.length) {
+    const avgM = pos.reduce((a, x) => a + x.mfe, 0) / pos.length, avgR = pos.reduce((a, x) => a + x.real, 0) / pos.length;
+    tips.push(`청산한 포지션은 보유 중 평균 <b class="pos">${fmtP(avgM)}</b>까지 갔고, 실제로는 평균 <b class="${cls(avgR)}">${fmtP(avgR)}</b>에 정리했습니다.${avgM < 2 * TF.k ? ' 진입 뒤 크게 유리하게 움직인 적이 적었습니다 — 진입 자리를 먼저 점검해 보세요.' : avgR / avgM < 0.4 ? ' 수익을 많이 돌려주고 있습니다 — 익절 예약이나 분할 익절을 써 보세요.' : avgR / avgM >= 0.6 ? ' 👍 수익 구간을 잘 챙겼습니다.' : ''}`);
+  }
+  const flip = exs.filter(x => x.mfe >= 2 * TF.k && x.real < 0).length;
+  if (flip) tips.push(`한때 +${(2 * TF.k).toFixed(1)}% 이상 수익이던 포지션을 손실로 마감한 경우가 <b>${flip}번</b> 있습니다. 수익이 나면 손절가를 본전으로 올리는 습관을 들여 보세요.`);
+  const deep = exs.filter(x => x.mae <= -4 * TF.k && x.real > 0).length;
+  if (deep) tips.push(`-${(4 * TF.k).toFixed(1)}% 넘게 물렸다가 수익으로 마감한 경우가 ${deep}번 있습니다. 결과는 좋았지만 손절가가 없었다면 위험했던 매매입니다.`);
+  $('modalBox').innerHTML = `<h2>🔍 복기</h2>
+    <p class="muted" style="font-size:12px">줄을 누르면 차트가 그 시점으로 이동하고, 청산이면 보유 중 가장 유리했던 봉에 '최고' 표시가 나타납니다. (가격 변동률 기준 · 다음 봉으로 넘어가면 표시가 사라집니다)</p>
+    ${tips.length ? `<ul>${tips.map(t => `<li>${t}</li>`).join('')}</ul>` : ''}
+    <div style="overflow-x:auto"><table class="htable rv"><thead><tr><th>시점</th><th>매매</th><th>체결가</th><th>점수</th><th style="text-align:left">복기</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="mbtns2"><span></span><button class="primary" id="closeModal">닫기</button></div>`;
+  $('modal').style.display = 'flex';
+  $('closeModal').onclick = closeModal;
+  $('modalBox').querySelectorAll('tr.click').forEach(tr => tr.onclick = () => jumpTo(+tr.dataset.j));
+}
+// 차트를 해당 매매 시점으로 이동 (현재 봉 이후는 원래 보이지 않음)
+function jumpTo(idx) {
+  const t = trades[idx]; if (!t) return;
+  closeModal(); stopAuto();
+  const x = excursion(t);
+  reviewMarks = [];
+  if (x) reviewMarks.push({ time: C[x.bi].time, position: x.dir > 0 ? 'aboveBar' : 'belowBar', color: '#f5c542', shape: 'circle', text: `최고 ${fmtP(x.mfe)}` });
+  setMarkers();
+  const from = (x ? x.o : t.i) - 40, to = Math.max(Math.min(cur, t.i + 40) + 5, from + 70);
+  main.timeScale().setVisibleLogicalRange({ from, to });
+  jumped = true;
+  if (innerWidth <= 900) document.querySelector('.charts').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  toast(`🔍 ${fmtT(C[t.i].time)} ${ACT[t.type]} @ ${fmtPx(t.price)}${x ? ` — 보유 중 최고 ${fmtP(x.mfe)}, 실제 ${fmtP(x.real)}` : ''}`);
+}
+$('trades').addEventListener('click', e => { const j = e.target.dataset && e.target.dataset.j; if (j != null) jumpTo(+j); });
 const closeModal = () => $('modal').style.display = 'none';
 
 // ───────────── 내 기록 (지난 연습 성적 누적) ─────────────
@@ -1214,7 +1390,8 @@ function showHistory() {
     const rows = H.slice(-30).reverse().map((h, i) => {
       const d = new Date(h.at);
       return `<tr><td>${H.length - i}</td><td>${d.getMonth() + 1}/${d.getDate()} · ${h.blind ? '🙈 ' : ''}${h.coin} ${TFS[h.tf] ? TFS[h.tf].name : h.tf} ${h.mode === 'fut' ? '선물' : '현물'}</td>
-        <td>${pc(h.ret)}</td><td>${pc(h.bh)}</td><td>${pc(h.ret - h.bh)}</td><td>${h.n}</td><td>${h.win == null ? '-' : h.win.toFixed(0) + '%'}</td><td>${h.score >= 0 ? '+' : ''}${h.score.toFixed(1)}</td></tr>`;
+        <td>${pc(h.ret)}</td><td>${pc(h.bh)}</td><td>${pc(h.ret - h.bh)}</td><td>${h.n}</td><td>${h.win == null ? '-' : h.win.toFixed(0) + '%'}</td><td>${h.score >= 0 ? '+' : ''}${h.score.toFixed(1)}</td>
+        <td><button data-r="${H.length - 1 - i}" title="같은 구간 다시 도전" style="padding:2px 8px">🔁</button></td></tr>`;
     }).join('');
     body = `<div class="kv">
         <span>연습 횟수</span><span>${H.length}판</span>
@@ -1227,7 +1404,7 @@ function showHistory() {
       </div>
       <div class="chartbox"><div class="cap">판별 <b>단순 보유 대비 초과 수익</b> (최근 ${last.length}판, 오른쪽이 최신) — 위로 갈수록 매매 실력이 좋았던 판</div>${barSvg(last.map(h => h.ret - h.bh), lbl, v => fmtP(v))}</div>
       <div class="chartbox"><div class="cap">판별 <b>평균 타점 점수</b> — 0보다 높으면 지표상 좋은 자리 위주로 매매</div>${barSvg(last.map(h => h.score), lbl, v => (v >= 0 ? '+' : '') + v.toFixed(1))}</div>
-      <div style="overflow-x:auto"><table class="htable"><thead><tr><th>#</th><th>날짜 · 종류</th><th>수익률</th><th>단순보유</th><th>초과</th><th>매매</th><th>승률</th><th>점수</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+      <div style="overflow-x:auto"><table class="htable"><thead><tr><th>#</th><th>날짜 · 종류</th><th>수익률</th><th>단순보유</th><th>초과</th><th>매매</th><th>승률</th><th>점수</th><th>다시</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     // 전체 기록의 진입 근거별 성적 합산
     const all = {};
     H.forEach(h => Object.entries(h.tags || {}).forEach(([g, [n, w, s]]) => { const a = all[g] || (all[g] = [0, 0, 0]); a[0] += n; a[1] += w; a[2] += s; }));
@@ -1242,6 +1419,11 @@ function showHistory() {
   $('hExport').onclick = exportBackup;
   $('hImport').onclick = () => { $('impFile').value = ''; $('impFile').click(); };
   $('hClear').onclick = () => { if (confirm(`저장된 연습 기록 ${H.length}판을 모두 지울까요? 되돌릴 수 없습니다.`)) { store.del(K_HIST); showHistory(); } };
+  $('modalBox').querySelectorAll('button[data-r]').forEach(b => b.onclick = () => {
+    const h = H[+b.dataset.r]; if (!h || !TFS[h.tf]) return;
+    if (trades.length && !gameRecorded && !confirm('지금 연습을 마치고(성적은 기록에 저장) 이 구간을 다시 도전할까요?')) return;
+    retryGame({ coin: h.coin, tf: h.tf, mode: h.mode, blind: h.blind, from: h.from, pf: h.pf });
+  });
 }
 
 // ── 기록 백업 (파일로 저장 / 불러와서 합치기) ──
@@ -1284,36 +1466,72 @@ $('impFile').onchange = () => {
   rd.readAsText(f);
 };
 
-// ───────────── 선 그리기 (수평선 · 추세선) ─────────────
+// ───────────── 선 그리기 (수평선 · 추세선 · 피보나치) · 가격 알림 ─────────────
 const LINE_COLOR = '#ff9f43';
+const FIB = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+const FIB_COLOR = { 0: '#8a93a5', 0.236: '#c77dff', 0.382: '#4aa3ff', 0.5: '#2ecc71', 0.618: '#f5c542', 0.786: '#ff9f43', 1: '#8a93a5' };
 function drawLine(l) {
   if (l.kind === 'h') {
     l.obj = sCandle.createPriceLine({ price: l.p1, color: LINE_COLOR, lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: '' });
+    return true;
+  }
+  if (l.kind === 'f') {
+    // 피보나치 되돌림: 첫 점(파동 시작)에서 둘째 점(파동 끝)까지의 움직임을 둘째 점 기준으로 되돌린 가격
+    if (l.p1 === l.p2) return false;
+    l.obj = FIB.map(r => sCandle.createPriceLine({ price: l.p2 - (l.p2 - l.p1) * r, color: FIB_COLOR[r], lineStyle: r === 0 || r === 1 ? 0 : 2,
+      lineWidth: 1, axisLabelVisible: true, title: `${(r * 100).toFixed(r === 0.236 || r === 0.382 || r === 0.618 || r === 0.786 ? 1 : 0)}%` }));
     return true;
   }
   let a = tIndex.get(l.t1), b = tIndex.get(l.t2);
   if (a == null || b == null || a === b) return false;
   let pa = l.p1, pb = l.p2;
   if (a > b) { [a, b] = [b, a]; [pa, pb] = [pb, pa]; }
-  const slope = (pb - pa) / (b - a), end = Math.min(C.length - 1, Math.max(b, cur) + 150);   // 오른쪽으로 연장
+  l.a = a; l.pa = pa; l.slope = (pb - pa) / (b - a);
   l.obj = main.addLineSeries({ color: LINE_COLOR, lineWidth: 1.5, lastValueVisible: false, priceLineVisible: false,
     crosshairMarkerVisible: false, autoscaleInfoProvider: () => null, priceFormat: { type: 'price', precision: PD, minMove: Math.pow(10, -PD) } });
-  // 봉마다 점을 찍어야 시간축 간격이 고르게 유지됨 (끝점만 넣으면 미래 구간이 한 칸으로 압축되어 기울기가 틀어짐)
+  // 현재 봉까지만 봉마다 점을 찍고, 봉이 진행될 때마다 한 칸씩 연장 (trendPush)
+  // — 미래 봉 시각을 미리 넣으면 시간축이 늘어나 새 봉이 화면 밖으로 밀려나고, 끝점만 넣으면 기울기가 틀어짐
   const pts = [];
-  for (let k = a; k <= end; k++) pts.push({ time: C[k].time, value: pa + slope * (k - a) });
+  for (let k = a; k <= cur; k++) pts.push({ time: C[k].time, value: pa + l.slope * (k - a) });
   l.obj.setData(pts);
   return true;
 }
+function trendPush(i) {
+  userLines.forEach(l => { if (l.kind === 't' && l.obj && i >= l.a) l.obj.update({ time: C[i].time, value: l.pa + l.slope * (i - l.a) }); });
+}
 function removeLine(l) {
   if (!l.obj) return;
-  if (l.kind === 'h') sCandle.removePriceLine(l.obj); else main.removeSeries(l.obj);
+  if (l.kind === 'h') sCandle.removePriceLine(l.obj);
+  else if (l.kind === 'f') l.obj.forEach(o => sCandle.removePriceLine(o));
+  else main.removeSeries(l.obj);
   l.obj = null;
 }
 function clearLines() { userLines.forEach(removeLine); userLines = []; setDrawMode(null); }
+// ── 가격 알림: 봉이 그 가격을 지나가면 자동재생을 멈추고 알려줌 ──
+function addAlert(px, quiet = false) {
+  if (alerts.length >= 8) return toast('알림은 최대 8개까지입니다.');
+  const a = { id: oid++, px };
+  a.obj = sCandle.createPriceLine({ price: px, color: '#4aa3ff', lineStyle: 1, lineWidth: 1, axisLabelVisible: true, title: '🔔' });
+  alerts.push(a);
+  if (quiet) return;
+  renderPending(); scheduleSave();
+  toast(`🔔 ${fmtPx(px)}에 알림 — 가격이 닿으면 자동재생이 멈춥니다.`);
+}
+function removeAlert(a) { if (a.obj) sCandle.removePriceLine(a.obj); alerts = alerts.filter(x => x !== a); }
+function clearAlerts() { alerts.slice().forEach(removeAlert); }
+function checkAlerts() {
+  if (!alerts.length || cur < 1) return false;
+  const c = C[cur], pc = C[cur - 1].close, lo = Math.min(c.low, pc), hi = Math.max(c.high, pc);
+  const hit = alerts.filter(a => a.px >= lo && a.px <= hi);
+  if (!hit.length) return false;
+  hit.forEach(removeAlert);
+  toast(`🔔 알림 가격 ${hit.map(a => fmtPx(a.px)).join(', ')} 도달! (${fmtT(c.time)})`);
+  return true;
+}
+const DRAW_BTN = { h: 'btnHLine', t: 'btnTLine', f: 'btnFib', a: 'btnAlert' };
 function setDrawMode(m) {
   drawMode = m; drawAnchor = null;
-  $('btnHLine').classList.toggle('drawing', m === 'h');
-  $('btnTLine').classList.toggle('drawing', m === 't');
+  Object.entries(DRAW_BTN).forEach(([k, id]) => $(id).classList.toggle('drawing', m === k));
 }
 const onChartTap = p => {
   if (!drawMode || !p.point || p.logical == null) return;
@@ -1323,13 +1541,15 @@ const onChartTap = p => {
   if (drawMode === 'h') {
     const l = { kind: 'h', p1: price }; drawLine(l); userLines.push(l);
     setDrawMode(null); toast(`수평선 ${fmtPx(price)}`); scheduleSave();
+  } else if (drawMode === 'a') {
+    setDrawMode(null); addAlert(price);
   } else if (!drawAnchor) {
     drawAnchor = { t: C[i].time, p: price };
-    toast('두 번째 점을 탭하세요.');
+    toast(drawMode === 'f' ? `시작점 ${fmtPx(price)} — 이제 파동의 끝(고점 또는 저점)을 탭하세요.` : '두 번째 점을 탭하세요.');
   } else {
-    const l = { kind: 't', t1: drawAnchor.t, p1: drawAnchor.p, t2: C[i].time, p2: price };
-    if (drawLine(l)) { userLines.push(l); toast('추세선을 그었습니다.'); scheduleSave(); }
-    else toast('두 점이 같은 봉입니다. 다른 봉을 탭하세요.');
+    const l = { kind: drawMode, t1: drawAnchor.t, p1: drawAnchor.p, t2: C[i].time, p2: price };
+    if (drawLine(l)) { userLines.push(l); toast(drawMode === 'f' ? '피보나치 되돌림을 그었습니다.' : '추세선을 그었습니다.'); scheduleSave(); }
+    else toast(drawMode === 'f' ? '두 점의 가격이 같습니다. 다시 그어 주세요.' : '두 점이 같은 봉입니다. 다른 봉을 탭하세요.');
     setDrawMode(null);
   }
 };
@@ -1343,11 +1563,12 @@ $('mainChart').addEventListener('pointerup', e => {
   if (x > r.width - main.priceScale('right').width()) return;   // 오른쪽 가격축 영역은 제외
   onChartTap({ point: { x, y }, logical: main.timeScale().coordinateToLogical(x) });
 }, true);
-$('btnHLine').onclick = () => { setDrawMode(drawMode === 'h' ? null : 'h'); if (drawMode) toast('차트에서 선을 그을 가격 위치를 탭하세요.'); };
-$('btnTLine').onclick = () => { setDrawMode(drawMode === 't' ? null : 't'); if (drawMode) toast('추세선의 첫 번째 점을 탭하세요.'); };
+const DRAW_MSG = { h: '차트에서 선을 그을 가격 위치를 탭하세요.', t: '추세선의 첫 번째 점을 탭하세요.',
+  f: '피보나치: 파동의 시작점(저점 또는 고점)을 먼저 탭하세요.', a: '알림을 걸 가격 위치를 차트에서 탭하세요.' };
+Object.entries(DRAW_BTN).forEach(([k, id]) => $(id).onclick = () => { setDrawMode(drawMode === k ? null : k); if (drawMode) toast(DRAW_MSG[k]); });
 $('btnUndoLine').onclick = () => {
-  if (drawMode) { setDrawMode(null); return toast('선 그리기를 취소했습니다.'); }
-  const l = userLines.pop(); if (!l) return toast('지울 선이 없습니다.');
+  if (drawMode) { setDrawMode(null); return toast('그리기를 취소했습니다.'); }
+  const l = userLines.pop(); if (!l) return toast('지울 선이 없습니다. (알림은 주문 칸 목록에서 취소)');
   removeLine(l); scheduleSave(); toast(`선을 지웠습니다${userLines.length ? ` (남은 선 ${userLines.length}개)` : ''}.`);
 };
 
@@ -1359,7 +1580,8 @@ function saveNow() {
   store.set(K_STATE, { v: 1, coin, tf, mode, blind, PF, startTime: C[startIdx].time, curTime: C[cur].time,
     acct, trades: trades.map(t => ({ ...t, i: undefined, t: C[t.i].time })), orders, oid, gameId, gameRecorded,
     fee: $('fee').value, lev: $('lev').value, sl: $('slPct').value, tp: $('tpPct').value, ratio, orderType,
-    lines: userLines.map(l => ({ kind: l.kind, p1: l.p1, t1: l.t1, p2: l.p2, t2: l.t2 })), tags: [...selTags], memo: $('memo').value });
+    lines: userLines.map(l => ({ kind: l.kind, p1: l.p1, t1: l.t1, p2: l.p2, t2: l.t2 })), tags: [...selTags], memo: $('memo').value,
+    alerts: alerts.map(a => a.px) });
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
 window.addEventListener('pagehide', saveNow);
@@ -1383,6 +1605,9 @@ function restoreGame(s) {
   renderAll();
   clearLines();
   (s.lines || []).forEach(l => { if (drawLine(l)) userLines.push(l); });
+  clearAlerts(); reviewMarks = [];
+  (s.alerts || []).forEach(px => addAlert(px, true));
+  updateUI();
   toast(`지난 연습을 이어서 합니다 · 남은 구간 ${remainText()}`);
   return true;
 }
@@ -1423,7 +1648,9 @@ $('btnBlind').onclick = () => {
 };
 $('btnBB').onclick = () => { showBB = !showBB; applyView(); legend(cur); savePrefs(); };
 $('lower').onchange = () => { lower = $('lower').value; applyView(); legend(cur); savePrefs(); };
-const savePrefs = () => store.set(K_PREF, { bb: showBB, lower, risk: riskPct });
+const savePrefs = () => store.set(K_PREF, { bb: showBB, lower, risk: riskPct, htf: showHTF });
+$('btnHTF').onclick = () => { showHTF = !showHTF; htfFull(); savePrefs(); };
+$('btnReview').onclick = showReview;
 document.querySelectorAll('#riskBtns button').forEach(b => b.onclick = () => {
   riskPct = +b.dataset.k; savePrefs(); updateRiskInfo();
   if (riskPct) toast(`리스크 ${riskPct}%: 손절되면 총자산의 약 ${riskPct}%만 잃도록 진입 수량을 자동으로 정합니다 (비율 버튼은 청산·매도에만 적용).`);
@@ -1480,7 +1707,7 @@ document.addEventListener('keydown', e => {
   else if (k === 'arrowright' || k === ' ') { e.preventDefault(); step(1); }
   else if (k === 'a') toggleAuto();
   else if (k === 'x' && mode === 'fut') act('close');
-  else if (k === 'escape') closeModal();
+  else if (k === 'escape') { closeModal(); if (drawMode) { setDrawMode(null); toast('그리기를 취소했습니다.'); } }
 });
 
 // ── 현물/선물 전환 ──
@@ -1554,7 +1781,7 @@ async function loadTF(newTf, keepTime, restore = null) {
 // 지난번 설정·진행 상황 불러오기
 (() => {
   const p = store.get(K_PREF);
-  if (p) { showBB = !!p.bb; lower = p.lower === 'macd' ? 'macd' : 'rsi'; riskPct = [0.5, 1, 2].includes(p.risk) ? p.risk : 0; }
+  if (p) { showBB = !!p.bb; lower = p.lower === 'macd' ? 'macd' : 'rsi'; riskPct = [0.5, 1, 2].includes(p.risk) ? p.risk : 0; showHTF = p.htf !== false; }
   const s = store.get(K_STATE);
   if (s && TFS[s.tf] && s.coin) {
     coin = s.coin; blind = !!s.blind;
