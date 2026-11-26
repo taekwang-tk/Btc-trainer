@@ -75,6 +75,13 @@
   #pending .po button{padding:2px 8px;font-size:12px}
   #pending:not(:empty){margin-top:8px}
   .hint{font-size:11px;color:var(--muted);margin-top:6px}
+  .chips{display:flex;flex-wrap:wrap;gap:4px}
+  .chips button,button.chip{padding:2px 9px;border-radius:12px;font-size:12px}
+  .ttags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+  .ttag{font-size:11px;padding:1px 7px;border-radius:10px;background:rgba(74,163,255,.15);color:#9cc8ff}
+  .memo{font-size:12px;margin-top:4px;color:#d6dae3}
+  #riskInfo{color:var(--text)}
+  button.drawing{background:var(--mid);border-color:var(--mid);color:#000}
   .sig{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--line)}
   .sig:last-child{border-bottom:0}
   .trade{border:1px solid var(--line);border-radius:8px;padding:10px;margin-bottom:8px;background:var(--panel2)}
@@ -109,6 +116,7 @@
     input,select{font-size:16px;min-height:40px}   /* iOS 입력창 자동 확대 방지 */
     .seg button{min-height:34px}
     .orow button,#pending .po button{min-height:36px}
+    .chips button{min-height:34px}
   }
   #mbar{display:none}
   @media (max-width:900px){
@@ -181,6 +189,10 @@
         <option value="macd">MACD</option>
       </select>
       <span class="sep"></span>
+      <button id="btnHLine" title="차트를 한 번 탭해서 수평선(지지·저항) 긋기">─ 수평선</button>
+      <button id="btnTLine" title="차트의 두 점을 탭해서 추세선 긋기">╱ 추세선</button>
+      <button id="btnUndoLine" title="마지막으로 그은 선 지우기">🧹 선 지우기</button>
+      <span class="sep"></span>
       <button id="btnReport">📊 결과 리포트</button>
       <button id="btnHistory">📈 내 기록</button>
     </div>
@@ -220,6 +232,17 @@
         손절 <input id="slPct" type="number" step="0.5" min="0" placeholder="없음" inputmode="decimal">%
         익절 <input id="tpPct" type="number" step="0.5" min="0" placeholder="없음" inputmode="decimal">%
         <button id="btnStops" title="지금 보유 중인 포지션에 손절·익절 적용">보유분에 적용</button>
+      </div>
+      <div class="orow">
+        리스크 <span class="seg" id="riskBtns"><button data-k="0" class="on">끔</button><button data-k="0.5">0.5%</button><button data-k="1">1%</button><button data-k="2">2%</button></span>
+        <span id="riskInfo"></span>
+      </div>
+      <div class="orow" style="align-items:flex-start">
+        <span style="padding-top:4px">근거</span>
+        <span class="chips" id="tagBtns" style="flex:1"></span>
+      </div>
+      <div class="orow">
+        <input id="memo" type="text" placeholder="진입 메모 (선택) — 예: 4시간 지지선 재확인" style="flex:1;width:auto" maxlength="80">
       </div>
       <div class="ratio" id="ratioBtns">
         <button data-r="0.25">25%</button>
@@ -266,6 +289,7 @@
 </div>
 
 <div id="modal"><div class="box" id="modalBox"></div></div>
+<input type="file" id="impFile" accept="application/json,.json" style="display:none">
 <div id="toast"></div>
 
 <script>
@@ -296,6 +320,10 @@ let acct, trades = [], mode = 'spot';   // mode: 'spot' 현물 | 'fut' 선물
 let orderType = 'market', orders = [], oid = 1;
 let gameId = 0, gameRecorded = false;
 let showBB = false, lower = 'rsi';
+let riskPct = 0;               // 리스크 기준 수량: 손절 시 잃을 자산 비율(%) — 0이면 끔
+const TAGS = ['추세추종', '눌림목', '돌파', '지지선', '저항선', '과매도', '과매수', '다이버전스', '이평선', '감'];
+let selTags = new Set(), pendingNote = null;
+let drawMode = null, drawAnchor = null, userLines = [];
 
 const $ = id => document.getElementById(id);
 const pad = n => String(n).padStart(2, '0');
@@ -312,6 +340,7 @@ const fmtPx = v => fmtN(v, PD);
 const fmtQ = v => fmtN(v, v >= 1000 ? 2 : v >= 1 ? 4 : 6);
 const fmtP = v => (v >= 0 ? '+' : '') + v.toFixed(2) + '%';
 const cls = v => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(t._h); t._h = setTimeout(() => t.style.display = 'none', 2200); }
 
 // ───────────── 저장 (이 기기의 브라우저에만 저장) ─────────────
@@ -591,8 +620,9 @@ function newGame(idx) {
   if (blind) { PF = (1000 + Math.random() * 9000) / RAW[cur].close; buildC(); }
   else if (C !== RAW) { PF = 1; buildC(); }
   applyPrecision();
-  acct = { cash: INITIAL, btc: 0, cost: 0, pos: null, stops: null };
+  acct = { cash: INITIAL, btc: 0, cost: 0, pos: null, stops: null, ptags: [] };
   trades = []; orders = []; gameId = Date.now(); gameRecorded = false;
+  clearLines();
   $('lev').disabled = false;
   $('startDate').value = fmtReal(C[cur].time).slice(0, 10);
   setTitle(); setStatus();
@@ -679,8 +709,9 @@ function checkLiq() {
   const lp = liqPrice(p), c = C[cur];
   if (!((p.side > 0 && c.low <= lp) || (p.side < 0 && c.high >= lp))) return false;
   acct.pos = null; acct.stops = null;
-  const t = { type: 'liq', i: cur, price: lp, qty: p.qty, amount: 0, lev: p.lev, side: p.side,
+  const t = { type: 'liq', i: cur, price: lp, qty: p.qty, amount: 0, lev: p.lev, side: p.side, ptags: (acct.ptags || []).slice(),
     result: { pnl: -p.margin, pct: -100, move: p.side * (lp / p.entry - 1) * 100 } };
+  acct.ptags = [];
   t.eval = { score: -3, label: '강제 청산', g: 'g-bad', pts: [
     { s: -3, txt: `${p.side > 0 ? '롱' : '숏'} ${p.lev}배 포지션이 청산가 ${fmtPx(lp)}에 닿아 강제 청산됐습니다. 증거금 ${fmtN(p.margin)} USDT 전액 손실.` },
     { s: 0, txt: `진입가 대비 ${fmtP(t.result.move)} 움직임만으로 청산됐습니다. 레버리지를 낮추거나, 청산가 전에 손절하는 규칙을 정하세요.` }] };
@@ -719,13 +750,16 @@ function checkStops() {
 }
 
 // ── 지정가 주문 ──
-function placeLimit(kind) {
+function placeLimit(kind, risk = null) {
   const px = parseFloat($('limitPx').value);
   if (!(px > 0)) return toast('지정가를 입력하세요.');
   if (orders.length >= 6) return toast('대기 주문은 최대 6개까지입니다.');
-  orders.push({ id: oid++, kind, px, r: ratio, lev: +$('lev').value, at: cur });
+  const o = { id: oid++, kind, px, r: ratio, lev: +$('lev').value, at: cur };
+  if (risk) o.risk = risk;
+  if (isEntryOrder(kind)) o.note = takeNote();
+  orders.push(o);
   updateUI();
-  toast(`지정가 ${KIND[kind]} 주문 접수 @ ${fmtPx(px)} (${Math.round(ratio * 100)}%) — 가격이 닿으면 체결됩니다.`);
+  toast(`지정가 ${KIND[kind]} 주문 접수 @ ${fmtPx(px)} (${risk ? `리스크 ${risk.pct}%` : Math.round(ratio * 100) + '%'}) — 가격이 닿으면 체결됩니다.`);
 }
 function checkOrders() {
   if (!orders.length) return false;
@@ -735,9 +769,14 @@ function checkOrders() {
     if (!(isBuy ? c.low <= o.px : c.high >= o.px)) { left.push(o); continue; }
     // 시가가 이미 지정가보다 유리하게 열리면 시가에 체결
     const fill = isBuy ? Math.min(c.open, o.px) : Math.max(c.open, o.px);
-    const ok = o.kind === 'buy' ? buy(fill, o.r, 'limit')
-      : o.kind === 'sell' ? sell(fill, o.r, 'limit')
-      : openPos(o.kind === 'long' ? 1 : -1, fill, o.r, o.lev, 'limit');
+    let r = o.r;
+    // 리스크 기준 주문: 체결되는 시점의 자산·가용 현금으로 수량을 다시 계산
+    if (o.risk && isEntryOrder(o.kind)) r = riskSize(o.risk.sl, o.lev, o.risk.pct).r;
+    pendingNote = o.note ? { ...o.note, risk: o.risk || null } : (o.risk ? { tags: [], memo: '', risk: o.risk } : null);
+    const ok = o.kind === 'buy' ? buy(fill, r, 'limit')
+      : o.kind === 'sell' ? sell(fill, r, 'limit')
+      : openPos(o.kind === 'long' ? 1 : -1, fill, r, o.lev, 'limit');
+    pendingNote = null;
     if (ok) filled++; else toast(`지정가 ${KIND[o.kind]} 주문이 체결 조건을 충족하지 못해 취소됐습니다.`);
   }
   orders = left;
@@ -745,15 +784,49 @@ function checkOrders() {
 }
 
 // ── 버튼·단축키 공통 주문 처리 ──
+// 새로 진입(또는 같은 방향으로 추가)하는 주문인지 — 선물에서 반대 방향 주문은 청산이므로 제외
+const isEntryOrder = kind => kind === 'buy' || ((kind === 'long' || kind === 'short') && !(acct.pos && acct.pos.side !== (kind === 'long' ? 1 : -1)));
+// 리스크 기준 수량: 손절가에 걸리면 총자산의 riskP%만 잃도록 주문 금액을 계산 (수수료 왕복 포함)
+function riskSize(slPct, levIn, riskP = riskPct) {
+  const eq = equity(), loss = eq * riskP / 100, f = feeRate();
+  const notional = loss / (slPct / 100 + 2 * f);
+  const lev = mode === 'fut' ? (acct.pos ? acct.pos.lev : levIn) : 1;
+  const need = notional / lev, cash = acct.cash;
+  return { r: cash > 0 ? Math.min(1, need / cash) : 0, need, notional, loss, capped: need > cash };
+}
 function act(kind) {
   if (!acct || !C.length) return;
   if (kind === 'close') return closePos(ratio);
-  if (orderType === 'limit') return placeLimit(kind);
-  if (kind === 'buy') buy(); else if (kind === 'sell') sell(); else openPos(kind === 'long' ? 1 : -1);
+  let r = ratio, risk = null;
+  if (riskPct && isEntryOrder(kind)) {
+    const sl = readPct('slPct');
+    if (!sl) return toast(`리스크 ${riskPct}% 수량 계산에는 손절 %가 필요합니다. 손절 %를 입력하세요.`);
+    risk = { pct: riskPct, sl };
+    r = riskSize(sl, +$('lev').value).r;
+  }
+  if (orderType === 'limit') return placeLimit(kind, risk);
+  if (isEntryOrder(kind)) pendingNote = { ...takeNote(), risk };
+  if (kind === 'buy') buy(C[cur].close, r); else if (kind === 'sell') sell(); else openPos(kind === 'long' ? 1 : -1, C[cur].close, r);
+  pendingNote = null;
+}
+// 진입 근거(태그)·메모를 읽고 입력칸을 비움
+function takeNote() {
+  const n = { tags: [...selTags], memo: $('memo').value.trim() };
+  selTags.clear(); $('memo').value = ''; renderTagBtns();
+  return n;
 }
 function record(type, price, qty, amount, result, lev = null, auto = null) {
   const t = { type, i: cur, price, qty, amount, result, lev, auto };
   if (isEntryType(type) && acct.stops) t.stop = { sl: acct.stops.sl, tp: acct.stops.tp, slPct: acct.stops.slPct, tpPct: acct.stops.tpPct };
+  if (isEntryType(type)) {
+    const n = pendingNote || { tags: [], memo: '' };
+    t.tags = n.tags || []; if (n.memo) t.memo = n.memo; if (n.risk) t.risk = n.risk;
+    acct.ptags = [...new Set([...(acct.ptags || []), ...t.tags])];
+  } else {
+    // 청산 결과는 이 포지션을 만든 진입들의 근거 태그에 연결 (근거별 승률 계산용)
+    t.ptags = (acct.ptags || []).slice();
+    if (!posBase()) acct.ptags = [];
+  }
   t.eval = evaluate(t);
   trades.push(t);
   setMarkers(); updateUI();
@@ -816,6 +889,9 @@ function evaluate(t) {
       }
     } else if (st && st.tp) add(0, `익절가 ${fmtPx(st.tp)}만 정하고 손절가는 없습니다. 손절가도 함께 정해 두세요.`);
     else add(0, `손절가를 정하지 않았습니다. 진입과 동시에 손절가를 정하는 습관을 들여 보세요.`);
+    if (t.risk) add(0, `리스크 ${t.risk.pct}% 기준 수량 — 손절(-${t.risk.sl}%)되면 자산의 약 ${t.risk.pct}%만 잃도록 크기를 정했습니다.`);
+    if (t.tags && t.tags.includes('감') && t.tags.length === 1) add(0, `근거를 '감'으로만 기록했습니다. 감이 맞는지는 '내 기록'의 근거별 성적에서 확인해 보세요.`);
+    else if (!t.tags || !t.tags.length) add(0, `진입 근거 태그를 고르지 않았습니다. 근거를 남기면 어떤 자리에서 잘 맞는지 기록에서 볼 수 있습니다.`);
     if (t.auto === 'limit') add(0, `지정가 주문 체결 — 원하는 가격을 기다린 진입입니다.`);
   } else {
     // 청산(매도·롱청산·숏청산): 포지션 방향 기준으로 '나가기 좋은 자리'인지 평가
@@ -925,6 +1001,7 @@ function updateUI() {
   $('lev').disabled = !!acct.pos;
   updatePosLines();
   renderPending();
+  updateRiskInfo();
   // 현재 지표
   const r = RSI[cur], m20 = MA20[cur], m60 = MA60[cur], vr = C[cur].volume / VAVG[cur];
   const trend = m20 > m60 && price > m60 ? '<span class="pos">정배열 (상승)</span>' : m20 < m60 && price < m60 ? '<span class="neg">역배열 (하락)</span>' : '<span style="color:var(--mid)">혼조</span>';
@@ -942,6 +1019,37 @@ function updateUI() {
     <div class="sig"><span>MACD</span><span>${macdTxt}</span></div>`;
   renderTrades();
   scheduleSave();
+}
+// 리스크 기준 수량 미리보기
+function updateRiskInfo() {
+  document.querySelectorAll('#riskBtns button').forEach(b => b.classList.toggle('on', +b.dataset.k === riskPct));
+  const el = $('riskInfo');
+  if (!riskPct || !acct || !C[cur]) { el.innerHTML = '<span class="muted">손절 시 잃을 자산 비율로 수량 자동 계산</span>'; return; }
+  const sl = readPct('slPct');
+  if (!sl) { el.innerHTML = '<span style="color:var(--mid)">← 손절 %를 입력하세요</span>'; return; }
+  const z = riskSize(sl, +$('lev').value);
+  const what = mode === 'fut' ? `증거금 ${fmtN(Math.min(z.need, acct.cash), 0)} (포지션 ${fmtN(Math.min(z.notional, acct.cash * (acct.pos ? acct.pos.lev : +$('lev').value)), 0)})` : `주문 ${fmtN(Math.min(z.need, acct.cash), 0)}`;
+  el.innerHTML = `손실 한도 ${fmtN(z.loss, 0)} USDT → ${what} USDT${z.capped ? ' <span style="color:var(--mid)">(가용 금액 전부)</span>' : ''}`;
+}
+// 진입 근거 태그 버튼
+function renderTagBtns() {
+  $('tagBtns').innerHTML = TAGS.map(g => `<button class="chip${selTags.has(g) ? ' on' : ''}" data-g="${g}">${g}</button>`).join('');
+}
+// 진입 근거별 성적: 청산 결과를 그 포지션의 근거 태그별로 집계 → { 태그: [청산 수, 이긴 수, 손익% 합] }
+function tagStats(list) {
+  const m = {};
+  list.filter(t => t.result && !isEntryType(t.type)).forEach(t => {
+    const tags = t.ptags && t.ptags.length ? t.ptags : ['(근거 없음)'];
+    tags.forEach(g => { const a = m[g] || (m[g] = [0, 0, 0]); a[0]++; if (t.result.pnl > 0) a[1]++; a[2] += t.result.pct; });
+  });
+  return m;
+}
+function tagTable(m, title) {
+  const rows = Object.entries(m).sort((a, b) => b[1][0] - a[1][0]);
+  if (!rows.length) return '';
+  return `<h3>${title}</h3><div style="overflow-x:auto"><table class="htable"><thead><tr><th>근거</th><th></th><th>청산</th><th>승률</th><th>평균 손익</th></tr></thead><tbody>${
+    rows.map(([g, [n, w, s]]) => `<tr><td>#${esc(g)}</td><td></td><td>${n}</td><td>${(w / n * 100).toFixed(0)}%</td><td class="${cls(s / n)}">${fmtP(s / n)}</td></tr>`).join('')
+  }</tbody></table></div><p class="muted" style="font-size:12px">한 포지션에 근거를 여러 개 고르면 각 근거에 모두 집계됩니다. 선물은 증거금 기준 손익(ROE)입니다.</p>`;
 }
 // 대기 중인 손절·익절과 지정가 주문 목록
 function renderPending() {
@@ -971,7 +1079,10 @@ function renderTrades() {
     return `<div class="trade">
       <div class="top"><span><span class="tag ${tagCls}">${ACT[t.type]}${t.lev ? ` ${t.lev}x` : ''}</span>${t.auto ? `<span class="auto">${AUTO_TXT[t.auto]}</span>` : ''} ${fmtT(C[t.i].time)}</span>
       <span class="grade ${e.g}">${e.label} (${e.score >= 0 ? '+' : ''}${e.score})</span></div>
-      <div class="muted" style="font-size:12px">체결가 ${fmtPx(t.price)} · ${fmtQ(t.qty)} ${coin}${res}</div>
+      <div class="muted" style="font-size:12px">체결가 ${fmtPx(t.price)} · ${fmtQ(t.qty)} ${coin}${res}${t.risk ? ` · 리스크 ${t.risk.pct}%` : ''}</div>
+      ${t.tags && t.tags.length ? `<div class="ttags">${t.tags.map(g => `<span class="ttag">#${g}</span>`).join('')}</div>` : ''}
+      ${!isEntryType(t.type) && t.ptags && t.ptags.length ? `<div class="ttags"><span class="muted" style="font-size:11px">진입 근거</span>${t.ptags.map(g => `<span class="ttag">#${g}</span>`).join('')}</div>` : ''}
+      ${t.memo ? `<div class="memo">📝 ${esc(t.memo)}</div>` : ''}
       <ul>${e.pts.map(p => `<li class="${p.s > 0 ? 'p' : p.s < 0 ? 'n' : 'z'}">${p.txt}</li>`).join('')}</ul>
       ${h.html ? `<div class="hind">${h.html}</div>` : ''}</div>`;
   }).join('');
@@ -1000,7 +1111,8 @@ function finalizeGame() {
   const H = store.get(K_HIST) || [];
   H.push({ id: gameId, at: Date.now(), coin, tf, mode, blind, from: C[startIdx].time, to: C[cur].time, bars: cur - startIdx,
     ret: +s.ret.toFixed(2), bh: +s.bh.toFixed(2), n: trades.length, entries: s.buys.length, exits: s.sells.length,
-    win: s.win == null ? null : +s.win.toFixed(1), score: +s.avgScore.toFixed(2), good: s.good, bad: s.bad, liq: s.liqs, sl: s.withSL });
+    win: s.win == null ? null : +s.win.toFixed(1), score: +s.avgScore.toFixed(2), good: s.good, bad: s.bad, liq: s.liqs, sl: s.withSL,
+    tags: tagStats(trades) });
   while (H.length > 300) H.shift();
   store.set(K_HIST, H);
   gameRecorded = true;
@@ -1059,6 +1171,7 @@ function report() {
     </div>
     ${reveal}
     <h3>💡 매매 습관 코멘트</h3><ul>${tips.map(t => `<li>${t}</li>`).join('')}</ul>
+    ${tagTable(tagStats(trades), '🏷 진입 근거별 성적 (이번 연습)')}
     <div class="mbtns2"><button id="mNew">🎲 새 연습 (랜덤)</button><span><button id="mHist">📈 내 기록</button> <button class="primary" id="closeModal">닫기</button></span></div>`;
   $('modal').style.display = 'flex';
   $('closeModal').onclick = closeModal;
@@ -1115,14 +1228,128 @@ function showHistory() {
       <div class="chartbox"><div class="cap">판별 <b>단순 보유 대비 초과 수익</b> (최근 ${last.length}판, 오른쪽이 최신) — 위로 갈수록 매매 실력이 좋았던 판</div>${barSvg(last.map(h => h.ret - h.bh), lbl, v => fmtP(v))}</div>
       <div class="chartbox"><div class="cap">판별 <b>평균 타점 점수</b> — 0보다 높으면 지표상 좋은 자리 위주로 매매</div>${barSvg(last.map(h => h.score), lbl, v => (v >= 0 ? '+' : '') + v.toFixed(1))}</div>
       <div style="overflow-x:auto"><table class="htable"><thead><tr><th>#</th><th>날짜 · 종류</th><th>수익률</th><th>단순보유</th><th>초과</th><th>매매</th><th>승률</th><th>점수</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    // 전체 기록의 진입 근거별 성적 합산
+    const all = {};
+    H.forEach(h => Object.entries(h.tags || {}).forEach(([g, [n, w, s]]) => { const a = all[g] || (all[g] = [0, 0, 0]); a[0] += n; a[1] += w; a[2] += s; }));
+    body += tagTable(all, '🏷 진입 근거별 성적 (전체 기록)');
   }
   $('modalBox').innerHTML = `<h2>📈 내 연습 기록</h2>${body}
-    <p class="muted" style="font-size:12px">기록은 이 기기의 브라우저(앱)에만 저장됩니다.</p>
-    <div class="mbtns2"><button id="hClear" ${H.length ? '' : 'disabled'}>기록 지우기</button><button class="primary" id="closeModal">닫기</button></div>`;
+    <p class="muted" style="font-size:12px">기록은 이 기기의 브라우저(앱)에만 저장됩니다. 다른 기기로 옮기거나 지워질 때를 대비해 백업 파일을 저장해 두세요.</p>
+    <div class="mbtns2"><span><button id="hExport" ${H.length ? '' : 'disabled'}>💾 백업 저장</button> <button id="hImport">📂 백업 불러오기</button></span>
+      <span><button id="hClear" ${H.length ? '' : 'disabled'}>기록 지우기</button> <button class="primary" id="closeModal">닫기</button></span></div>`;
   $('modal').style.display = 'flex';
   $('closeModal').onclick = closeModal;
+  $('hExport').onclick = exportBackup;
+  $('hImport').onclick = () => { $('impFile').value = ''; $('impFile').click(); };
   $('hClear').onclick = () => { if (confirm(`저장된 연습 기록 ${H.length}판을 모두 지울까요? 되돌릴 수 없습니다.`)) { store.del(K_HIST); showHistory(); } };
 }
+
+// ── 기록 백업 (파일로 저장 / 불러와서 합치기) ──
+async function exportBackup() {
+  const H = store.get(K_HIST) || [];
+  const d = new Date(), name = `coin-trainer-backup-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}.json`;
+  const text = JSON.stringify({ app: 'coinTrainer', v: 1, exportedAt: d.toISOString(), history: H, prefs: store.get(K_PREF) }, null, 1);
+  const file = new File([text], name, { type: 'application/json' });
+  // 아이패드: 공유 시트 → '파일에 저장' / 컴퓨터: 다운로드
+  try {
+    if (navigator.canShare && navigator.canShare({ files: [file] }) && /iPad|iPhone|Macintosh/.test(navigator.userAgent) && 'ontouchend' in document) {
+      await navigator.share({ files: [file], title: '코인 매매 연습 기록 백업' });
+      return toast('공유 시트에서 "파일에 저장"을 고르면 백업이 저장됩니다.');
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  toast(`백업 파일 저장: ${name} (${H.length}판)`);
+}
+$('impFile').onchange = () => {
+  const f = $('impFile').files[0]; if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    let data;
+    try { data = JSON.parse(rd.result); } catch (e) { return toast('백업 파일을 읽을 수 없습니다.'); }
+    const inc = data && data.app === 'coinTrainer' && Array.isArray(data.history) ? data.history.filter(h => h && h.at && TFS[h.tf] && typeof h.ret === 'number') : null;
+    if (!inc) return toast('이 앱의 백업 파일이 아닙니다.');
+    const H = store.get(K_HIST) || [], seen = new Set(H.map(h => `${h.id}-${h.at}`));
+    const add = inc.filter(h => !seen.has(`${h.id}-${h.at}`));
+    if (!add.length) return toast('새로 추가할 기록이 없습니다 (이미 모두 있음).');
+    if (!confirm(`백업에서 새 기록 ${add.length}판을 지금 기록(${H.length}판)에 합칠까요?`)) return;
+    const M = H.concat(add).sort((a, b) => a.at - b.at);
+    while (M.length > 300) M.shift();
+    store.set(K_HIST, M);
+    toast(`기록 ${add.length}판을 불러왔습니다.`);
+    showHistory();
+  };
+  rd.readAsText(f);
+};
+
+// ───────────── 선 그리기 (수평선 · 추세선) ─────────────
+const LINE_COLOR = '#ff9f43';
+function drawLine(l) {
+  if (l.kind === 'h') {
+    l.obj = sCandle.createPriceLine({ price: l.p1, color: LINE_COLOR, lineStyle: 0, lineWidth: 1, axisLabelVisible: true, title: '' });
+    return true;
+  }
+  let a = tIndex.get(l.t1), b = tIndex.get(l.t2);
+  if (a == null || b == null || a === b) return false;
+  let pa = l.p1, pb = l.p2;
+  if (a > b) { [a, b] = [b, a]; [pa, pb] = [pb, pa]; }
+  const slope = (pb - pa) / (b - a), end = Math.min(C.length - 1, Math.max(b, cur) + 150);   // 오른쪽으로 연장
+  l.obj = main.addLineSeries({ color: LINE_COLOR, lineWidth: 1.5, lastValueVisible: false, priceLineVisible: false,
+    crosshairMarkerVisible: false, autoscaleInfoProvider: () => null, priceFormat: { type: 'price', precision: PD, minMove: Math.pow(10, -PD) } });
+  // 봉마다 점을 찍어야 시간축 간격이 고르게 유지됨 (끝점만 넣으면 미래 구간이 한 칸으로 압축되어 기울기가 틀어짐)
+  const pts = [];
+  for (let k = a; k <= end; k++) pts.push({ time: C[k].time, value: pa + slope * (k - a) });
+  l.obj.setData(pts);
+  return true;
+}
+function removeLine(l) {
+  if (!l.obj) return;
+  if (l.kind === 'h') sCandle.removePriceLine(l.obj); else main.removeSeries(l.obj);
+  l.obj = null;
+}
+function clearLines() { userLines.forEach(removeLine); userLines = []; setDrawMode(null); }
+function setDrawMode(m) {
+  drawMode = m; drawAnchor = null;
+  $('btnHLine').classList.toggle('drawing', m === 'h');
+  $('btnTLine').classList.toggle('drawing', m === 't');
+}
+const onChartTap = p => {
+  if (!drawMode || !p.point || p.logical == null) return;
+  const price = sCandle.coordinateToPrice(p.point.y);
+  if (price == null) return;
+  const i = Math.max(0, Math.min(C.length - 1, Math.round(p.logical)));
+  if (drawMode === 'h') {
+    const l = { kind: 'h', p1: price }; drawLine(l); userLines.push(l);
+    setDrawMode(null); toast(`수평선 ${fmtPx(price)}`); scheduleSave();
+  } else if (!drawAnchor) {
+    drawAnchor = { t: C[i].time, p: price };
+    toast('두 번째 점을 탭하세요.');
+  } else {
+    const l = { kind: 't', t1: drawAnchor.t, p1: drawAnchor.p, t2: C[i].time, p2: price };
+    if (drawLine(l)) { userLines.push(l); toast('추세선을 그었습니다.'); scheduleSave(); }
+    else toast('두 점이 같은 봉입니다. 다른 봉을 탭하세요.');
+    setDrawMode(null);
+  }
+};
+// 차트 라이브러리의 클릭 이벤트는 빠른 연속 탭(더블클릭)을 삼키므로, 차트 칸의 탭을 직접 받아 좌표를 변환
+// (끌어서 차트를 옮긴 경우는 탭으로 치지 않음)
+let tapStart = null;
+$('mainChart').addEventListener('pointerdown', e => { tapStart = drawMode ? { x: e.clientX, y: e.clientY } : null; }, true);
+$('mainChart').addEventListener('pointerup', e => {
+  if (!drawMode || !tapStart || Math.hypot(e.clientX - tapStart.x, e.clientY - tapStart.y) > 8) return;
+  const r = $('mainChart').getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (x > r.width - main.priceScale('right').width()) return;   // 오른쪽 가격축 영역은 제외
+  onChartTap({ point: { x, y }, logical: main.timeScale().coordinateToLogical(x) });
+}, true);
+$('btnHLine').onclick = () => { setDrawMode(drawMode === 'h' ? null : 'h'); if (drawMode) toast('차트에서 선을 그을 가격 위치를 탭하세요.'); };
+$('btnTLine').onclick = () => { setDrawMode(drawMode === 't' ? null : 't'); if (drawMode) toast('추세선의 첫 번째 점을 탭하세요.'); };
+$('btnUndoLine').onclick = () => {
+  if (drawMode) { setDrawMode(null); return toast('선 그리기를 취소했습니다.'); }
+  const l = userLines.pop(); if (!l) return toast('지울 선이 없습니다.');
+  removeLine(l); scheduleSave(); toast(`선을 지웠습니다${userLines.length ? ` (남은 선 ${userLines.length}개)` : ''}.`);
+};
 
 // ───────────── 자동 저장 · 이어하기 ─────────────
 let saveTimer = null;
@@ -1131,7 +1358,8 @@ function saveNow() {
   if (!acct || !C[cur] || !C[startIdx]) return;
   store.set(K_STATE, { v: 1, coin, tf, mode, blind, PF, startTime: C[startIdx].time, curTime: C[cur].time,
     acct, trades: trades.map(t => ({ ...t, i: undefined, t: C[t.i].time })), orders, oid, gameId, gameRecorded,
-    fee: $('fee').value, lev: $('lev').value, sl: $('slPct').value, tp: $('tpPct').value, ratio, orderType });
+    fee: $('fee').value, lev: $('lev').value, sl: $('slPct').value, tp: $('tpPct').value, ratio, orderType,
+    lines: userLines.map(l => ({ kind: l.kind, p1: l.p1, t1: l.t1, p2: l.p2, t2: l.t2 })), tags: [...selTags], memo: $('memo').value });
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
 window.addEventListener('pagehide', saveNow);
@@ -1143,15 +1371,18 @@ function restoreGame(s) {
   stopAuto();
   startIdx = si; cur = ci; PF = s.PF || 1;
   buildC(); applyPrecision();
-  acct = s.acct; if (acct.stops === undefined) acct.stops = null;
+  acct = s.acct; if (acct.stops === undefined) acct.stops = null; if (!acct.ptags) acct.ptags = [];
   trades = tr; orders = s.orders || []; oid = s.oid || 1; gameId = s.gameId || Date.now(); gameRecorded = !!s.gameRecorded;
   if (s.fee != null) $('fee').value = s.fee;
   if (s.lev) $('lev').value = s.lev;
   $('slPct').value = s.sl || ''; $('tpPct').value = s.tp || '';
   setRatio(s.ratio || 1); setOrderType(s.orderType || 'market');
   $('startDate').value = fmtReal(C[startIdx].time).slice(0, 10);
+  selTags = new Set((s.tags || []).filter(g => TAGS.includes(g))); $('memo').value = s.memo || ''; renderTagBtns();
   setTitle(); setStatus();
   renderAll();
+  clearLines();
+  (s.lines || []).forEach(l => { if (drawLine(l)) userLines.push(l); });
   toast(`지난 연습을 이어서 합니다 · 남은 구간 ${remainText()}`);
   return true;
 }
@@ -1192,7 +1423,20 @@ $('btnBlind').onclick = () => {
 };
 $('btnBB').onclick = () => { showBB = !showBB; applyView(); legend(cur); savePrefs(); };
 $('lower').onchange = () => { lower = $('lower').value; applyView(); legend(cur); savePrefs(); };
-const savePrefs = () => store.set(K_PREF, { bb: showBB, lower });
+const savePrefs = () => store.set(K_PREF, { bb: showBB, lower, risk: riskPct });
+document.querySelectorAll('#riskBtns button').forEach(b => b.onclick = () => {
+  riskPct = +b.dataset.k; savePrefs(); updateRiskInfo();
+  if (riskPct) toast(`리스크 ${riskPct}%: 손절되면 총자산의 약 ${riskPct}%만 잃도록 진입 수량을 자동으로 정합니다 (비율 버튼은 청산·매도에만 적용).`);
+});
+$('slPct').addEventListener('input', updateRiskInfo);
+$('lev').addEventListener('change', updateRiskInfo);
+$('tagBtns').onclick = e => {
+  const g = e.target.dataset && e.target.dataset.g; if (!g) return;
+  if (selTags.has(g)) selTags.delete(g); else selTags.add(g);
+  renderTagBtns(); scheduleSave();
+};
+$('memo').addEventListener('input', scheduleSave);
+renderTagBtns();
 function setRatio(r) {
   ratio = r;
   document.querySelectorAll('#ratioBtns button').forEach(x => x.classList.toggle('on', +x.dataset.r === r));
@@ -1310,7 +1554,7 @@ async function loadTF(newTf, keepTime, restore = null) {
 // 지난번 설정·진행 상황 불러오기
 (() => {
   const p = store.get(K_PREF);
-  if (p) { showBB = !!p.bb; lower = p.lower === 'macd' ? 'macd' : 'rsi'; }
+  if (p) { showBB = !!p.bb; lower = p.lower === 'macd' ? 'macd' : 'rsi'; riskPct = [0.5, 1, 2].includes(p.risk) ? p.risk : 0; }
   const s = store.get(K_STATE);
   if (s && TFS[s.tf] && s.coin) {
     coin = s.coin; blind = !!s.blind;
