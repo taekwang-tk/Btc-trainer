@@ -52,10 +52,10 @@
   #legend b{color:var(--text);font-weight:600}
   .charts{flex:1;display:flex;flex-direction:column;min-height:0;position:relative;overflow:hidden}
   /* contain:strict — 차트가 그린 캔버스 크기가 다시 칸 크기를 키우는 순환을 막음 (Safari에서 차트가 점점 커지던 원인) */
-  #mainChart,#rsiChart{contain:strict;overflow:hidden;position:relative}
+  #mainChart,#rsiChart,#macdChart{contain:strict;overflow:hidden;position:relative}
   #mainChart{flex:3;min-height:0}
   .rsi-title{font-size:11px;color:var(--muted);padding:2px 12px;border-top:1px solid var(--line)}
-  #rsiChart{flex:1;min-height:130px}
+  #rsiChart,#macdChart{flex:1;min-height:110px}
   aside{overflow-y:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;min-height:0;padding:12px;display:flex;flex-direction:column;gap:12px}
   aside > .card{flex:none}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px}
@@ -136,7 +136,7 @@
     .charts{flex:none}
     /* svh = 주소창이 펼쳐진 상태 기준의 고정 높이 → 스크롤 중 주소창이 접혀도 차트 크기가 변하지 않음 */
     #mainChart{flex:none;height:48vh;height:48svh;min-height:300px}
-    #rsiChart{flex:none;height:160px}
+    #rsiChart,#macdChart{flex:none;height:160px}
     #mbar{display:block;position:fixed;left:0;right:0;bottom:0;z-index:5;background:rgba(23,27,35,.97);
       border-top:1px solid var(--line);padding:8px 12px calc(8px + env(safe-area-inset-bottom));backdrop-filter:blur(6px)}
     .mstat{display:flex;justify-content:space-between;gap:8px;font-size:13px;margin-bottom:6px;font-variant-numeric:tabular-nums}
@@ -195,6 +195,7 @@
       <select id="lower" title="아래 보조지표">
         <option value="rsi">RSI</option>
         <option value="macd">MACD</option>
+        <option value="both">RSI + MACD</option>
       </select>
       <span class="sep"></span>
       <button id="btnHTF" title="상위 봉 흐름을 작은 차트로 보기">🔭 상위봉</button>
@@ -216,6 +217,8 @@
       <div id="htfBox"><div class="cap" id="htfCap"></div><div id="htfChart"></div></div>
       <div class="rsi-title" id="lowerTitle"></div>
       <div id="rsiChart"></div>
+      <div class="rsi-title" id="macdTitle"></div>
+      <div id="macdChart"></div>
     </div>
   </main>
 
@@ -473,6 +476,7 @@ const base = {
 };
 const main = LC.createChart($('mainChart'), { ...base, timeScale: { ...base.timeScale, visible: false } });
 const rsiC = LC.createChart($('rsiChart'), base);
+const macC = LC.createChart($('macdChart'), base);
 const sCandle = main.addCandlestickSeries({ upColor: '#26a69a', downColor: '#ef5350', borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350' });
 const sVol = main.addHistogramSeries({ priceScaleId: 'vol', priceFormat: { type: 'volume' }, lastValueVisible: false, priceLineVisible: false });
 main.priceScale('vol').applyOptions({ scaleMargins: { top: 0.8, bottom: 0 } });
@@ -487,15 +491,17 @@ const sRSI = rsiC.addLineSeries({ color: '#f5c542', lineWidth: 1.5, priceLineVis
 sRSI.createPriceLine({ price: 70, color: '#ef5350', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 sRSI.createPriceLine({ price: 30, color: '#26a69a', lineStyle: 2, lineWidth: 1, axisLabelVisible: false });
 sRSI.createPriceLine({ price: 50, color: '#3a4150', lineStyle: 3, lineWidth: 1, axisLabelVisible: false });
-const sHist = rsiC.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false, visible: false });
-const sMacd = rsiC.addLineSeries({ color: '#4aa3ff', lineWidth: 1.5, priceLineVisible: false, visible: false });
-const sSig = rsiC.addLineSeries({ color: '#f5a623', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false, visible: false });
+const sHist = macC.addHistogramSeries({ priceLineVisible: false, lastValueVisible: false });
+const sMacd = macC.addLineSeries({ color: '#4aa3ff', lineWidth: 1.5, priceLineVisible: false });
+const sSig = macC.addLineSeries({ color: '#f5a623', lineWidth: 1.2, priceLineVisible: false, lastValueVisible: false });
 rsiC.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+macC.priceScale('right').applyOptions({ scaleMargins: { top: 0.1, bottom: 0.1 } });
+const CHARTS = [[main, 'mainChart'], [rsiC, 'rsiChart'], [macC, 'macdChart']];
 
 // 화면 회전·크기 변경 시 차트 크기를 칸에 맞춰 강제로 다시 맞춤
 // (아이패드 Safari는 가로→세로→가로 전환 때 자동 맞춤이 누락되어 세로 크기로 남는 경우가 있음)
 function fitCharts() {
-  [[main, 'mainChart'], [rsiC, 'rsiChart']].forEach(([ch, id]) => {
+  CHARTS.forEach(([ch, id]) => {
     const el = $(id), w = el.clientWidth, h = el.clientHeight;
     if (!w || !h) return;
     const range = ch.timeScale().getVisibleLogicalRange();
@@ -517,8 +523,12 @@ if (window.visualViewport) visualViewport.addEventListener('resize', scheduleFit
 if (screen.orientation) screen.orientation.addEventListener('change', scheduleFit);
 
 let syncing = false;
-main.timeScale().subscribeVisibleLogicalRangeChange(r => { if (syncing || !r) return; syncing = true; rsiC.timeScale().setVisibleLogicalRange(r); syncing = false; });
-rsiC.timeScale().subscribeVisibleLogicalRangeChange(r => { if (syncing || !r) return; syncing = true; main.timeScale().setVisibleLogicalRange(r); syncing = false; });
+// 세 차트(가격·RSI·MACD)의 보이는 구간을 서로 맞춤
+CHARTS.forEach(([src]) => src.timeScale().subscribeVisibleLogicalRangeChange(r => {
+  if (syncing || !r) return; syncing = true;
+  CHARTS.forEach(([ch]) => { if (ch !== src) ch.timeScale().setVisibleLogicalRange(r); });
+  syncing = false;
+}));
 
 const barC = i => ({ time: C[i].time, open: C[i].open, high: C[i].high, low: C[i].low, close: C[i].close });
 const barV = i => ({ time: C[i].time, value: C[i].volume, color: C[i].close >= C[i].open ? 'rgba(38,166,154,.45)' : 'rgba(239,83,80,.45)' });
@@ -584,14 +594,21 @@ function htfPush(i) {
 // 보조지표 표시 상태 (볼린저밴드 켜기/끄기, 아래 칸 RSI ↔ MACD)
 function applyView() {
   sBBU.applyOptions({ visible: showBB }); sBBL.applyOptions({ visible: showBB });
-  const m = lower === 'macd';
-  sRSI.applyOptions({ visible: !m });
-  [sMacd, sSig, sHist].forEach(s => s.applyOptions({ visible: m }));
+  // 아래 칸: RSI만 / MACD만 / 둘 다 (둘 다일 때는 맨 아래 MACD 칸에만 시간축 표시)
+  const showR = lower !== 'macd', showM = lower !== 'rsi';
+  const was = [$('rsiChart').style.display, $('macdChart').style.display].join();
+  $('rsiChart').style.display = $('lowerTitle').style.display = showR ? '' : 'none';
+  $('macdChart').style.display = $('macdTitle').style.display = showM ? '' : 'none';
+  rsiC.applyOptions({ timeScale: { visible: !showM } });
   $('btnBB').classList.toggle('on', showBB);
   $('lower').value = lower;
-  $('lowerTitle').innerHTML = m
-    ? 'MACD(12, 26, 9) &nbsp; <span style="color:#4aa3ff">─ MACD</span> &nbsp; <span style="color:#f5a623">─ 시그널</span> &nbsp; 막대 = 차이'
-    : 'RSI(14) &nbsp; <span style="color:#ef5350">─ 70 과매수</span> &nbsp; <span style="color:#26a69a">─ 30 과매도</span>';
+  $('lowerTitle').innerHTML = 'RSI(14) &nbsp; <span style="color:#ef5350">─ 70 과매수</span> &nbsp; <span style="color:#26a69a">─ 30 과매도</span>';
+  $('macdTitle').innerHTML = 'MACD(12, 26, 9) &nbsp; <span style="color:#4aa3ff">─ MACD</span> &nbsp; <span style="color:#f5a623">─ 시그널</span> &nbsp; 막대 = 차이';
+  // 칸 구성이 바뀌면 크기를 다시 맞추고, 새로 보인 칸의 구간을 가격 차트와 맞춤
+  if (was !== [$('rsiChart').style.display, $('macdChart').style.display].join()) {
+    const r = main.timeScale().getVisibleLogicalRange();
+    requestAnimationFrame(() => { fitCharts(); if (r) CHARTS.forEach(([ch]) => ch.timeScale().setVisibleLogicalRange(r)); });
+  }
 }
 const pdFor = p => p >= 100 ? 2 : p >= 10 ? 3 : p >= 1 ? 4 : 5;
 // 가격 자릿수를 코인 가격대에 맞춤 (DOGE·XRP처럼 1달러 아래 코인도 보이게)
@@ -645,13 +662,12 @@ function legend(i) {
    &nbsp; <span style="color:#f5c542">MA20 ${fmtPx(MA20[i])}</span> <span style="color:#4aa3ff">MA60 ${fmtPx(MA60[i])}</span> <span style="color:#c77dff">MA120 ${fmtPx(MA120[i])}</span>`;
   if (showBB) h += ` <span style="color:#bec8dc">BB ${fmtPx(BBL[i])} ~ ${fmtPx(BBU[i])}</span>`;
   h += ` &nbsp; 거래량 <b>${fmtN(c.volume, 0)}</b> &nbsp; `;
-  h += lower === 'macd'
-    ? `MACD <b>${fmtN(MACD[i], PD + 1)}</b> 시그널 <b>${fmtN(MSIG[i], PD + 1)}</b>`
-    : `RSI <b>${fmtN(RSI[i], 1)}</b>`;
+  if (lower !== 'macd') h += `RSI <b>${fmtN(RSI[i], 1)}</b> `;
+  if (lower !== 'rsi') h += `MACD <b>${fmtN(MACD[i], PD + 1)}</b> 시그널 <b>${fmtN(MSIG[i], PD + 1)}</b>`;
   $('legend').innerHTML = h;
 }
 const onMove = p => { const i = p.time != null ? tIndex.get(p.time) : null; legend(i != null && i <= cur ? i : cur); };
-main.subscribeCrosshairMove(onMove); rsiC.subscribeCrosshairMove(onMove);
+CHARTS.forEach(([ch]) => ch.subscribeCrosshairMove(onMove));
 
 // ───────────── 리플레이 ─────────────
 // 랜덤 시작: 최신 데이터까지 최소 데이터의 40%(그리고 최소 1500봉)가 남도록 앞쪽 구간에서 고름
@@ -1781,7 +1797,7 @@ async function loadTF(newTf, keepTime, restore = null) {
 // 지난번 설정·진행 상황 불러오기
 (() => {
   const p = store.get(K_PREF);
-  if (p) { showBB = !!p.bb; lower = p.lower === 'macd' ? 'macd' : 'rsi'; riskPct = [0.5, 1, 2].includes(p.risk) ? p.risk : 0; showHTF = p.htf !== false; }
+  if (p) { showBB = !!p.bb; lower = ['macd', 'both'].includes(p.lower) ? p.lower : 'rsi'; riskPct = [0.5, 1, 2].includes(p.risk) ? p.risk : 0; showHTF = p.htf !== false; }
   const s = store.get(K_STATE);
   if (s && TFS[s.tf] && s.coin) {
     coin = s.coin; blind = !!s.blind;
